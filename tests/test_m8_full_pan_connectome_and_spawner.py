@@ -12,7 +12,7 @@ from fly_nca.genome import FlySpawner, MultiFlySocialArena4D
 @pytest.mark.skipif(not PAN_CONNECTOME_PATH.is_file(), reason="Compiled 189,766-cell pan-connectome not on disk")
 def test_full_189766_pan_connectome_structure_and_5_ports() -> None:
     """1. Verify that PanConnectomeSubstrate loads all 188,508 BANC + 1,258 MCNS male-specific = 189,766 cells & 6.75M edges."""
-    sub = PanConnectomeSubstrate.get("cpu")
+    sub = PanConnectomeSubstrate.get()
     assert sub.n_banc == 188508
     assert sub.n_male_specific == 1258
     assert sub.n_total == 189766
@@ -36,7 +36,7 @@ def test_full_189766_pan_connectome_structure_and_5_ports() -> None:
 @pytest.mark.skipif(not PAN_CONNECTOME_PATH.is_file(), reason="Compiled 189,766-cell pan-connectome not on disk")
 def test_fly_spawner_valid_genomes_and_male_female_social_interactions() -> None:
     """2. Spawn XX female and XY male flies with valid genomes and verify courtship song, receptivity, and male-male boxing."""
-    spawner = FlySpawner(seed=108, device="cpu")
+    spawner = FlySpawner(seed=108)
 
     # A. Male + Female pair near food cup -> Male courts & sings (LC10a -> P1 -> pIP10 -> TN1), Female listens (JO -> pC1)
     female = spawner.spawn_fly(sex="F", pos_xyz=(0.002, 0.0, 0.0), yaw_rad=0.0)

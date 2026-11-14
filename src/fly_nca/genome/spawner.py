@@ -111,9 +111,13 @@ class SpawnedFly:
 class FlySpawner:
     """Spawner that generates valid individual male & female Drosophila genomes and instantiates 189,766-cell flies."""
 
-    def __init__(self, seed: int = 42, device: torch.device | str = "cpu") -> None:
+    def __init__(self, seed: int = 42, device: torch.device | str | None = None) -> None:
         self.rng = random.Random(seed)
-        self.device = torch.device(device)
+        self.device = (
+            torch.device(device)
+            if device is not None
+            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
         self.spawn_counter: int = 0
 
     def sample_valid_genome(

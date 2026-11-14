@@ -51,13 +51,18 @@ class FullConnectomeReadout:
     lbl40_t3_rate: float
 
 
+def default_device() -> torch.device:
+    """Return CUDA GPU device when available, otherwise CPU."""
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 class PanConnectomeSubstrate:
     """Shared read-only structural CSR graph of all 189,766 cells and 6,749,514 subcellular edges."""
 
     _CACHE: dict[str, "PanConnectomeSubstrate"] = {}
 
-    def __init__(self, path: Path = PAN_CONNECTOME_PATH, device: torch.device | str = "cpu") -> None:
-        self.device = torch.device(device)
+    def __init__(self, path: Path = PAN_CONNECTOME_PATH, device: torch.device | str | None = None) -> None:
+        self.device = torch.device(device) if device is not None else default_device()
         if not path.is_file():
             from tools.build_pan_connectome_189766 import build_pan_connectome
 
@@ -107,10 +112,11 @@ class PanConnectomeSubstrate:
         return coo.to_sparse_csr()
 
     @classmethod
-    def get(cls, device: torch.device | str = "cpu") -> "PanConnectomeSubstrate":
-        key = str(torch.device(device))
+    def get(cls, device: torch.device | str | None = None) -> "PanConnectomeSubstrate":
+        resolved = torch.device(device) if device is not None else default_device()
+        key = str(resolved)
         if key not in cls._CACHE:
-            cls._CACHE[key] = cls(device=device)
+            cls._CACHE[key] = cls(device=resolved)
         return cls._CACHE[key]
 
 
@@ -136,10 +142,10 @@ class FullConnectomeFlyNCA(nn.Module):
         shakb_gap_scale: float = 1.0,
         snpfr_hunger_scale: float = 1.0,
         courtship_vigor_scale: float = 1.0,
-        device: torch.device | str = "cpu",
+        device: torch.device | str | None = None,
     ) -> None:
         super().__init__()
-        self.device = torch.device(device)
+        self.device = torch.device(device) if device is not None else default_device()
         self.sex: Literal["F", "M"] = sex
         self.dsx_isoform: Literal["DsxF", "DsxM"] = dsx_isoform or ("DsxF" if sex == "F" else "DsxM")
         self.fru_m_active: bool = fru_m_active if fru_m_active is not None else (sex == "M")
@@ -157,7 +163,8 @@ class FullConnectomeFlyNCA(nn.Module):
         # Cell-autonomous Dsx / Fru survival & expression mask (X:A -> Sxl -> Tra -> DsxF/DsxM + FruM):
         # - DsxF triggers apoptosis of male-specific P1 cluster (PMC10622783: FruM females lack P1 because P1 requires DsxM!)
         # - DsxM triggers apoptosis of female-specific oviDN/vpoEN/uterus neurons
-        # - FruM enables male VNC song circuits (TN1/vPR6) and pIP10 descending song drive
+        # - FruM switches dendritic arborization between aSP-f (FruM+) and aSP-g (Fru-) (Kohl et al. 2013 Cell)
+        #   and enables male VNC song circuits (TN1/vPR6) and pIP10 descending song drive
         sex_mask = torch.ones(n, device=self.device, dtype=torch.float32)
         if self.dsx_isoform == "DsxF":
             sex_mask[self.substrate.sex_code == 3] = 0.0  # Male-specific P1 dies under DsxF
@@ -168,9 +175,16 @@ class FullConnectomeFlyNCA(nn.Module):
                 sex_mask[cg["dimorphic_male_pip10"]] = 1.0
         else:
             sex_mask[self.substrate.sex_code == 2] = 0.0  # Female-specific oviDN/vpoEN/uterus absent under DsxM
-            if not self.fru_m_active:
-                # DsxM + Fru- mutant male: P1 survives (DsxM), but FruM-dependent song/mAL arbors are silent
-                sex_mask[cg["dimorphic_male_tn1_song"]] = 0.0
+            sex_mask[cg["eff_oviposition_uterus"]] = 0.0
+            sex_mask[cg["dimorphic_female_vpo_ovi"]] = 0.0
+
+        # Kohl et al. (2013) Cell / PMC10622783 dendritic switch on cVA pathway (Or67d -> DA1 -> aSP-f vs aSP-g):
+        if self.fru_m_active:
+            sex_mask[cg["dimorphic_female_asp_g"]] = 0.0  # FruM+ disconnects female-typical aSP-g dendrites
+        else:
+            sex_mask[cg["dimorphic_female_asp_f"]] = 0.0  # Fru- disconnects male-typical aSP-f dendrites
+            sex_mask[cg["dimorphic_male_tn1_song"]] = 0.0
+            sex_mask[cg["dimorphic_male_pip10"]] = 0.0
         self.register_buffer("sex_cell_mask", sex_mask)
 
         # Living per-cell state vectors across all 189,766 cells:
@@ -206,14 +220,13 @@ class FullConnectomeFlyNCA(nn.Module):
         i_sens[cg["sens_visual_right"]] = 0.35 * vis_mean + 0.45 * float(sensor.looming_rate)
         i_sens[cg["sens_ocellar"]] = abs(float(sensor.head_horizon_rpy[0].item())) + abs(float(sensor.head_horizon_rpy[1].item()))
 
-        # Looming shadow directly excites LC4/LPLC2 -> DNp01 (Giant Fiber)
+        # Looming shadow on retina excites peripheral lobula LC4/LPLC2 visual feature detectors
         if sensor.looming_rate > 0.70:
             i_sens[cg["circuit_lc4_looming"]] = float(sensor.looming_rate) * 1.5
-            i_sens[cg["dn_gf_dnp01"]] = float(sensor.looming_rate) * 1.4 * self.shakb_gap_scale
 
         # Small moving target (conspecific mate/rival) excites LC10a visual tracking neurons
         if sensor.small_target_salience > 0.05:
-            sal = float(sensor.small_target_salience)
+            sal = float(sensor.small_target_salience) * self.courtship_vigor_scale
             az = float(sensor.small_target_azimuth_rad)
             if az >= 0.0:
                 i_sens[cg["circuit_lc10a_left"]] = sal * 1.3
@@ -232,28 +245,29 @@ class FullConnectomeFlyNCA(nn.Module):
                 if g_cells is not None and g_cells.numel() > 0:
                     i_sens[g_cells] = min(1.0, val * hunger_boost)
 
-        # Sex pheromone cVA (Or67d -> ORN_DA1, 224 cells) & mate odor (ORN_VA1v, 171 cells)
+        # Sex pheromone cVA (Or67d -> ORN_DA1, 224 sensory cells) & mate odor (ORN_VA1v, 171 sensory cells)
         if cva_pheromone_conc > 0.0:
-            i_sens[cg["sens_orn_DA1_cva"]] = float(cva_pheromone_conc)
+            i_sens[cg["sens_orn_DA1_cva"]] = float(cva_pheromone_conc) * self.courtship_vigor_scale
         if mate_odor_conc > 0.0:
-            i_sens[cg["sens_orn_VA1v_mate"]] = float(mate_odor_conc)
+            i_sens[cg["sens_orn_VA1v_mate"]] = float(mate_odor_conc) * self.courtship_vigor_scale
 
-        # 3. Johnston's Organ (1,187 cells: wind vector + courtship song vibration)
+        # 3. Johnston's Organ (1,187 sensory cells: wind vector + courtship song vibration)
         wind_mag = float(sensor.wind_vector_ego.norm().item())
         song_vib = float(sensor.sound_vibration)
-        i_sens[cg["sens_jo_left"]] = min(1.0, wind_mag + song_vib * 1.2)
-        i_sens[cg["sens_jo_right"]] = min(1.0, wind_mag + song_vib * 1.2)
+        i_sens[cg["sens_jo_left"]] = min(1.0, wind_mag + song_vib * 1.2 * self.courtship_vigor_scale)
+        i_sens[cg["sens_jo_right"]] = min(1.0, wind_mag + song_vib * 1.2 * self.courtship_vigor_scale)
 
-        # 4. Gustatory periphery (1,585 cells across labellum, legs, pharynx)
+        # 4. Gustatory periphery (1,585 sensory cells across labellum, legs, pharynx)
         sweet = float(sensor.taste_sweet_bitter_amino[0].item())
         bitter = float(sensor.taste_sweet_bitter_amino[1].item())
-        amino = float(sensor.taste_sweet_bitter_amino[2].item())
+        amino = float(sensor.taste_sweet_bitter_amino[2].item()) + (0.6 if substrate_yeast_rich else 0.0)
         i_sens[cg["sens_gust_labellum"]] = min(1.0, sweet * hunger_boost + amino)
         i_sens[cg["sens_gust_front_leg"]] = min(1.0, sweet + bitter + amino)
+        i_sens[cg["sens_gust_hind_leg"]] = min(1.0, amino)
         i_sens[cg["sens_gust_pharynx"]] = min(1.0, sweet + amino)
         i_sens[cg["sens_nociception"]] = bitter
 
-        # 5. Legs & Haltere Proprioception / Mechanoreception (9,135 cells)
+        # 5. Legs & Haltere Proprioception / Mechanoreception (9,135 sensory cells)
         leg_tags = ("L1", "R1", "L2", "R2", "L3", "R3")
         for leg_i, l_tag in enumerate(leg_tags):
             load_i = float(sensor.leg_ground_load[leg_i].item())
@@ -265,31 +279,7 @@ class FullConnectomeFlyNCA(nn.Module):
         i_sens[cg["sens_haltere_right"]] = min(1.0, 0.3 + halt_mag)
         i_sens[cg["sens_crop_visceral"]] = float(sensor.crop_stretch)
 
-        # 6. Sexually dimorphic social decision circuits (X:A -> Sxl -> Tra -> DsxF/DsxM + Fru-/FruM, PMC10622783):
-        # Kohl et al. (2013) Cell / PMC10622783:
-        # - Under FruM+ (males & fru^M females), DA1 lPN connects to aSP-f/DC1 dendrites (repulsion/aggression to male cVA),
-        #   and LC10a + female cues drive courtship song (via P1 if DsxM, or directly via FruM+ pIP10/TN1 in DsxF+FruM+ females!).
-        # - Under Fru- (wild-type females), DA1 lPN connects to aSP-g dendrites (cVA attraction) + JO song drives pC1 receptivity!
-        if self.fru_m_active:
-            if cva_pheromone_conc > 0.0:
-                i_sens[cg["dimorphic_female_asp_f"]] = float(cva_pheromone_conc) * 1.2
-            if sensor.small_target_salience > 0.1 and conspecific_is_female:
-                court_drive = float(sensor.small_target_salience) * (1.0 + mate_odor_conc) * self.courtship_vigor_scale
-                i_sens[cg["dimorphic_male_p1"]] = court_drive * 1.4  # Masked to 0.0 if DsxF killed P1!
-                i_sens[cg["dimorphic_male_pip10"]] = court_drive * 1.5
-                i_sens[cg["dimorphic_male_tn1_song"]] = court_drive * 1.5
-            elif sensor.small_target_salience > 0.1 and not conspecific_is_female:
-                i_sens[cg["dimorphic_male_mal"]] = (0.8 + cva_pheromone_conc) / max(0.3, self.oaa2r_brake_scale)
-        else:
-            if song_vib > 0.15 or cva_pheromone_conc > 0.15:
-                rec_drive = (0.6 * song_vib + 0.5 * cva_pheromone_conc) * self.courtship_vigor_scale
-                i_sens[cg["dimorphic_female_asp_g"]] = rec_drive * 1.2
-                i_sens[cg["dimorphic_female_pc1"]] = rec_drive * 1.3
-
-        if self.dsx_isoform == "DsxF" and substrate_yeast_rich and float(sensor.leg_ground_load.mean().item()) > 0.2:
-            i_sens[cg["dimorphic_female_vpo_ovi"]] = 1.2
-            i_sens[cg["eff_oviposition_uterus"]] = 1.1
-
+        _ = conspecific_is_female
         return i_sens * self.sex_cell_mask
 
     def step_full_connectome(
@@ -301,9 +291,15 @@ class FullConnectomeFlyNCA(nn.Module):
         conspecific_is_female: bool = True,
         substrate_yeast_rich: bool = False,
         hunger_level: float = 0.3,
+        n_synaptic_hops: int = 6,
         dt_ms: float = 4.038,
     ) -> FullConnectomeReadout:
-        """Advance all 189,766 cells by dt_ms through the 5-port sparse CSR connectome matrices."""
+        """Advance all 189,766 cells by `n_synaptic_hops` through the 5-port sparse CSR connectome matrices.
+
+        Zero central-neuron shortcuts: sensory periphery inputs (`i_sens`) enter ONLY at the 16,563 sensory
+        neurons (`sens_*` + peripheral optic glomeruli `LC4/LC10a`) and propagate across the 6,749,514
+        empirical synaptic edges (`AL_PN -> KC/MBON/LHON -> CX/P1/pC1 -> DNs -> Motor Neurons`).
+        """
         sub = self.substrate
         cg = sub.cell_groups
         i_sens = self.inject_sensory_periphery(
@@ -315,29 +311,32 @@ class FullConnectomeFlyNCA(nn.Module):
             hunger_level=hunger_level,
         )
 
-        # Port 3: Axo-axonic presynaptic modulation across all 189,766 axons
-        a_col = (self.a * self.sex_cell_mask).unsqueeze(1)
-        aa_mod = torch.matmul(sub.w_port3_aa, a_col).squeeze(1)
-        a_presyn = (self.a * self.sex_cell_mask * (1.0 + 0.35 * aa_mod)).clamp(0.0, 1.0).unsqueeze(1)
+        hop_dt = float(dt_ms) / max(1, int(n_synaptic_hops))
+        alpha_v = (hop_dt / sub.tau_v_ms).clamp(0.18, 0.85)
+        theta = 0.05
 
-        # Port 1 (ACh+ dendritic excitation) & Port 2 (GABA/Glu/His dendritic & root chloride shunting)
-        i_exc = torch.matmul(sub.w_port1_ach, a_presyn).squeeze(1) + i_sens
-        g_shunt = torch.matmul(sub.w_port2_shunt, a_presyn).squeeze(1)
-        g_root = torch.matmul(sub.w_port2_root, a_presyn).squeeze(1)
-        i_mod = torch.matmul(sub.w_port5_mod, a_presyn).squeeze(1)
+        for _ in range(max(1, int(n_synaptic_hops))):
+            # Port 3: Axo-axonic presynaptic modulation across all 189,766 axons
+            a_col = (self.a * self.sex_cell_mask).unsqueeze(1)
+            aa_mod = torch.matmul(sub.w_port3_aa, a_col).squeeze(1)
+            a_presyn = (self.a * self.sex_cell_mask * (1.0 + 0.35 * aa_mod)).clamp(0.0, 1.0).unsqueeze(1)
 
-        # 5-Port dendritic integration across all 189,766 cells
-        i_dend = torch.tanh(2.2 * i_exc / (1.0 + sub.alpha_shunt * g_shunt)) / (1.0 + 3.0 * g_root)
+            # Port 1 (ACh+ dendritic excitation) & Port 2 (GABA/Glu/His dendritic & root chloride shunting)
+            i_exc = torch.matmul(sub.w_port1_ach, a_presyn).squeeze(1) + i_sens
+            g_shunt = torch.matmul(sub.w_port2_shunt, a_presyn).squeeze(1)
+            g_root = torch.matmul(sub.w_port2_root, a_presyn).squeeze(1)
+            i_mod = torch.matmul(sub.w_port5_mod, a_presyn).squeeze(1)
 
-        # Membrane potential Leaky Integrator with individual empirical cable-length tau_V[189,766]
-        alpha_v = (float(dt_ms) / sub.tau_v_ms).clamp(0.05, 1.0)
-        drive = i_dend + 0.25 * i_mod - 0.30 * self.adapt
-        self.v = ((1.0 - alpha_v) * self.v + alpha_v * drive).clamp(-1.0, 1.0) * self.sex_cell_mask
+            # 5-Port dendritic integration across all 189,766 cells
+            i_dend = torch.tanh(2.6 * i_exc / (1.0 + 0.25 * sub.alpha_shunt * g_shunt)) / (1.0 + 2.0 * g_root)
 
-        # Soma firing rate a_i(t + dt) and spike-frequency adaptation
-        theta = 0.08
-        self.a = (torch.relu(self.v - theta) * 2.2).clamp(0.0, 1.0) * self.sex_cell_mask
-        self.adapt = (0.90 * self.adapt + 0.10 * self.a).clamp(0.0, 1.0)
+            # Membrane potential Leaky Integrator with individual empirical cable-length tau_V[189,766]
+            drive = i_dend + 0.25 * i_mod - 0.15 * self.adapt
+            self.v = ((1.0 - alpha_v) * self.v + alpha_v * drive).clamp(-1.0, 1.0) * self.sex_cell_mask
+
+            # Soma firing rate a_i(t + dt) and spike-frequency adaptation
+            self.a = (torch.relu(self.v - theta) * 2.5).clamp(0.0, 1.0) * self.sex_cell_mask
+            self.adapt = (0.92 * self.adapt + 0.08 * self.a).clamp(0.0, 1.0)
 
         # Summarize organ & circuit activity
         organ_names = ("OL", "AL", "LH_SPIN", "MB", "CX", "AN_DN", "VNC", "SEZ", "GLIA")
@@ -356,6 +355,11 @@ class FullConnectomeFlyNCA(nn.Module):
             "reproduction": round(self.group_mean_rate("dn_cluster_reproduction"), 4),
         }
         _ = cg
+        fem_rec = max(
+            self.group_mean_rate("dimorphic_female_pc1"),
+            self.group_mean_rate("dimorphic_female_vpo_ovi"),
+            self.group_mean_rate("dimorphic_female_asp_g"),
+        )
         return FullConnectomeReadout(
             n_active_cells=int((self.a > 0.01).sum().item()),
             mean_firing_rate=round(float(self.a.mean().item()), 5),
@@ -364,7 +368,7 @@ class FullConnectomeFlyNCA(nn.Module):
             male_p1_courtship_rate=round(self.group_mean_rate("dimorphic_male_p1"), 4),
             male_pip10_song_rate=round(self.group_mean_rate("dimorphic_male_pip10"), 4),
             male_tn1_wing_song_rate=round(self.group_mean_rate("dimorphic_male_tn1_song"), 4),
-            female_pc1_receptivity_rate=round(self.group_mean_rate("dimorphic_female_pc1"), 4),
+            female_pc1_receptivity_rate=round(fem_rec, 4),
             female_ovi_oviposition_rate=round(self.group_mean_rate("eff_oviposition_uterus"), 4),
             gf_dnp01_rate=round(self.group_mean_rate("dn_gf_dnp01"), 4),
             mdn_backward_rate=round(self.group_mean_rate("dn_mdn"), 4),
