@@ -127,6 +127,33 @@ def check_instrument_panel_completeness(device: str = "cpu") -> dict[str, Any]:
     }
 
 
+def check_pan_connectome_189766_and_spawner(device: str = "cpu") -> dict[str, Any]:
+    """Verify the Full 189,766-Cell Pan-Connectome (BANC v888 + MCNS v1.0) and XX/XY Genetic Spawner."""
+    from fly_nca.genome.spawner import FlySpawner, MultiFlySocialArena4D
+
+    spawner = FlySpawner(seed=108, device=device)
+    female = spawner.spawn_fly(sex="F", pos_xyz=(0.002, 0.0, 0.0), yaw_rad=0.0)
+    male = spawner.spawn_fly(sex="M", pos_xyz=(-0.002, 0.0, 0.0), yaw_rad=0.0)
+    sub = female.full_connectome.substrate
+    social = MultiFlySocialArena4D(flies=[female, male])
+    snaps = social.step_population(frames=3)
+    ok = (
+        sub.n_total == 189766
+        and sub.n_edges > 6_700_000
+        and snaps[1]["wing_song_active"] is True
+        and snaps[1]["behavior"] == "MALE_COURTSHIP_SONG"
+        and snaps[0]["behavior"] in ("FEMALE_SONG_RECEPTIVITY", "FEMALE_OVIPOSITION")
+    )
+    return {
+        "id": "P3_pan_connectome_189766_and_spawner",
+        "ok": ok,
+        "n_total_cells": sub.n_total,
+        "n_subcellular_edges": sub.n_edges,
+        "male_behavior": snaps[1]["behavior"],
+        "female_behavior": snaps[0]["behavior"],
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class VerifySuiteSpec:
     """Named bundle of verification checks — mirrors ScenarioSpec for the laboratory bench."""
@@ -140,8 +167,12 @@ class VerifySuiteSpec:
 VERIFY_SUITES: dict[str, VerifySuiteSpec] = {
     "gate": VerifySuiteSpec(
         id="gate",
-        description="Model Purity (zero pinv, zero atan2) + 21 BANC v888 classes + mt-lattice-fluid time quanta.",
-        check_fns=(check_zero_pinv_and_atan2_purity, check_banc_biophysics_and_time_quanta),
+        description="Model Purity (zero pinv, zero atan2) + 21 BANC v888 classes + 189,766-cell Pan-Connectome & Spawner.",
+        check_fns=(
+            check_zero_pinv_and_atan2_purity,
+            check_banc_biophysics_and_time_quanta,
+            check_pan_connectome_189766_and_spawner,
+        ),
         ship=True,
     ),
     "mb_lh_plasticity": VerifySuiteSpec(

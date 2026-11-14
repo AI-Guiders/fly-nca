@@ -9,6 +9,7 @@ import torch
 
 from fly_nca.app.lab import execute_scenario_protocol, open_lab
 from fly_nca.app.scenario import SCENARIOS
+from fly_nca.genome.spawner import FlySpawner, MultiFlySocialArena4D
 
 
 def _device_default() -> str:
@@ -50,6 +51,38 @@ def cmd_panel(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_spawn(args: argparse.Namespace) -> int:
+    if args.device == "cuda" and not torch.cuda.is_available():
+        args.device = "cpu"
+    spawner = FlySpawner(seed=args.seed, device=args.device)
+    flies = spawner.spawn_population(n_flies=args.count)
+    social_arena = MultiFlySocialArena4D(flies=flies)
+    snapshots = social_arena.step_population(frames=args.steps)
+    payload = {
+        "n_flies": len(flies),
+        "pan_connectome_cells_per_fly": flies[0].full_connectome.substrate.n_total,
+        "pan_connectome_edges_per_fly": flies[0].full_connectome.substrate.n_edges,
+        "genomes": [
+            {
+                "fly_id": f.genome.fly_id,
+                "sex": f.genome.sex,
+                "foraging_allele": f.genome.foraging_allele,
+                "locomotion_gain": f.genome.foraging_locomotion_gain,
+                "dopr1_learning": f.genome.dopr1_learning_scale,
+                "oaa2r_brake": f.genome.oaa2r_brake_scale,
+                "courtship_vigor": f.genome.courtship_vigor_scale,
+            }
+            for f in flies
+        ],
+        "final_frame": snapshots,
+    }
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    if args.json or not args.json_out:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Fly-NCA Configurable Wet-Lab Bench")
     sub = p.add_subparsers(dest="command", required=True)
@@ -71,6 +104,15 @@ def build_parser() -> argparse.ArgumentParser:
     panel_p.add_argument("--json", action="store_true")
     panel_p.add_argument("--json-out", type=str, default=None)
     panel_p.set_defaults(func=cmd_panel)
+
+    spawn_p = sub.add_parser("spawn", help="Spawn a population of XX female & XY male 189,766-cell flies in 4D arena")
+    spawn_p.add_argument("--count", type=int, default=4)
+    spawn_p.add_argument("--steps", type=int, default=4)
+    spawn_p.add_argument("--seed", type=int, default=42)
+    spawn_p.add_argument("--device", default=_device_default())
+    spawn_p.add_argument("--json", action="store_true")
+    spawn_p.add_argument("--json-out", type=str, default=None)
+    spawn_p.set_defaults(func=cmd_spawn)
 
     return p
 

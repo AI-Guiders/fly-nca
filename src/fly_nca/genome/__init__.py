@@ -19,6 +19,12 @@ from fly_nca.genome.morphogenesis import (
     DevelopedFlyOrganism,
     develop_fly_from_genome,
 )
+from fly_nca.genome.spawner import (
+    FlySpawner,
+    IndividualFlyGenome,
+    MultiFlySocialArena4D,
+    SpawnedFly,
+)
 
 __all__ = [
     "SHTF_17_NAMES",
@@ -34,4 +40,8 @@ __all__ = [
     "ORGAN_NAMES",
     "DevelopedFlyOrganism",
     "develop_fly_from_genome",
+    "FlySpawner",
+    "IndividualFlyGenome",
+    "MultiFlySocialArena4D",
+    "SpawnedFly",
 ]

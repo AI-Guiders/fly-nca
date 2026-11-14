@@ -37,7 +37,7 @@ def test_instrument_panel_samples_all_36_registered_channels() -> None:
 def test_all_9_published_wetlab_protocols_match_empirical_results() -> None:
     """Run all ship verification suites (gate + 9 wet-lab protocols + instruments) and verify 100% PASS."""
     rows = run_suites(SHIP_SUITE_IDS, device="cpu")
-    assert len(rows) == 12
+    assert len(rows) == 13
     failed = [r for r in rows if not r["ok"]]
     assert failed == []
 

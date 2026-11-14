@@ -19,6 +19,7 @@ class OdorPlume3D:
     sigma_m: float = 0.08
     is_sweet_food: bool = False
     is_bitter_shock: bool = False
+    is_yeast_protein: bool = False
 
 
 @dataclass
@@ -202,6 +203,8 @@ class FastTensorArena4D:
                         self.crop_stretch = min(1.0, self.crop_stretch + 0.01 * dt_ms)
                 if plume.is_bitter_shock:
                     taste[1] = 1.0
+                if plume.is_yeast_protein:
+                    taste[2] = 1.0
 
         # Small visual target bearing & salience
         small_sal = 0.0

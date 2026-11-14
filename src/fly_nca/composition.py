@@ -8,11 +8,12 @@ import torch.nn as nn
 
 from fly_nca.body import FastTensorArena4D, MotorOut, SensorIn
 from fly_nca.core import GlialSubstrateNCA, HemolymphState
-from fly_nca.genome import FlyGenome, develop_fly_from_genome
 from fly_nca.genome.banc_biophysics import (
     BANC_EMPIRICAL_BIOPHYSICS,
     BANC_ORGAN_INPUT_MATRIX,
 )
+from fly_nca.genome.fly_genome import FlyGenome
+from fly_nca.genome.morphogenesis import develop_fly_from_genome
 from fly_nca.nervous import (
     BiologicalPort,
     ImpulseChannel,
