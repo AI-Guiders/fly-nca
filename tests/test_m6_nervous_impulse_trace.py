@@ -51,12 +51,20 @@ def test_nervous_impulse_trace_records_full_synaptic_wave_and_jsonl(tmp_path: Pa
     assert "select" in kinds_0    # AL glomeruli, LH-SPIN valence, CX 16-ring wedges
     assert "route" in kinds_0     # VNC descending bundle routing
 
-    # Frame 2 must record the LC4 -> GF electrical threshold and ESCAPE_JUMP outcome
+    # Frame 2 must record the LC4 -> GF electrical threshold AND Port4_ShakB_Electrical on VNC route!
     assert persisted[1]["outcome"] == ImpulseOutcome.ESCAPE_JUMP.value
     assert any(
         ev["kind"] == "threshold" and "Giant Fiber" in ev.get("reason", "")
         for ev in persisted[1]["events"]
     )
+    route_ev_1 = [ev for ev in persisted[1]["events"] if ev["kind"] == "route"][0]
+    assert route_ev_1["port"] == "Port4_ShakB_Electrical"
+
+    # Frame 1 MB score must include weighted_approach matching avoid_mbon + net_learned_valence (0.0 on naive fly)
+    mb_score_0 = [ev for ev in persisted[0]["events"] if ev["kind"] == "score"][0]
+    pots_0 = {p["id"]: p["score"] for p in mb_score_0["potentials"]}
+    assert "weighted_approach" in pots_0
+    assert abs((pots_0["weighted_approach"] - pots_0["avoid_mbon"]) - pots_0["net_learned_valence"]) < 1e-4
 
     # Sleep frames transition from QUIET_SLEEP (SLOW_WAVE) to ACTIVE_SLEEP_CREB (ACTIVE_REM)
     outcomes = [row["outcome"] for row in persisted[2:]]

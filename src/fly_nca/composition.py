@@ -166,14 +166,18 @@ class FlyNCAComposition(nn.Module):
                 rejected_above_floor=suppressed_kcs,
                 inputs={"kc_sparsity": round(float(mb_read.kc_active_fraction), 4)},
             )
-            approach_drive = float(mb_read.mbon_rates[0::2].mean().item())
-            avoid_drive = float(mb_read.mbon_rates[1::2].mean().item())
+            pos_mask = self.mushroom_body.mbon_valence_sign > 0
+            neg_mask = self.mushroom_body.mbon_valence_sign < 0
+            approach_drive = float(mb_read.mbon_rates[pos_mask].mean().item())
+            avoid_drive = float(mb_read.mbon_rates[neg_mask].mean().item())
+            weighted_approach = avoid_drive + float(mb_read.net_learned_valence)
             imp.score(
                 "mushroom_body.mbon_15_compartments",
                 organ="MB",
                 port=BiologicalPort.PORT3_AXO_AXONIC,
                 potentials=[
                     {"id": "approach_mbon", "score": round(approach_drive, 4)},
+                    {"id": "weighted_approach", "score": round(weighted_approach, 4)},
                     {"id": "avoid_mbon", "score": round(avoid_drive, 4)},
                     {"id": "net_learned_valence", "score": round(float(mb_read.net_learned_valence), 4)},
                 ],
@@ -273,15 +277,19 @@ class FlyNCAComposition(nn.Module):
                 sensor = arena.step_physics(motor, dt_ms=1.0)
 
             active_routes: list[str] = []
+            route_port = BiologicalPort.PORT1_ACH
             if dn_cmd.gf_looming_spike > 0.5:
                 active_routes.append("GF->TTMn_escape_jump")
                 outcome = ImpulseOutcome.ESCAPE_JUMP
+                route_port = BiologicalPort.PORT4_SHAKB_GAP
             elif cx_out.sleep_phase == "ACTIVE_REM":
                 active_routes.append("dFB->MB_CREB_consolidation")
                 outcome = ImpulseOutcome.ACTIVE_SLEEP_CREB
+                route_port = BiologicalPort.PORT5_GLIA
             elif cx_out.sleep_phase == "SLOW_WAVE":
                 active_routes.append("dFB->VNC_quiet_sleep_gate")
                 outcome = ImpulseOutcome.QUIET_SLEEP
+                route_port = BiologicalPort.PORT5_GLIA
             elif dn_cmd.proboscis_fdg > 0.5:
                 active_routes.append("FDG->MN9_proboscis_extension")
                 outcome = ImpulseOutcome.FEED_PER
@@ -305,13 +313,13 @@ class FlyNCAComposition(nn.Module):
             imp.route(
                 "vnc_autopilot.descending_bundle",
                 organ="VNC",
-                port=BiologicalPort.PORT1_ACH,
+                port=route_port,
                 selected=active_routes,
                 potentials=[
+                    {"id": "GF_shakB", "score": round(float(dn_cmd.gf_looming_spike), 4)},
                     {"id": "DNp09_fwd", "score": round(float(dn_cmd.forward_walk_dnp09), 4)},
                     {"id": "MDN_back", "score": round(float(dn_cmd.backward_walk_mdn), 4)},
-                    {"id": "DNa02_L", "score": round(float(dn_cmd.turn_left_dna02), 4)},
-                    {"id": "DNa02_R", "score": round(float(dn_cmd.turn_right_dna02), 4)},
+                    {"id": "DNa02_steer", "score": round(float(dn_cmd.turn_left_dna02 - dn_cmd.turn_right_dna02), 4)},
                 ],
             )
             imp.finish(outcome)

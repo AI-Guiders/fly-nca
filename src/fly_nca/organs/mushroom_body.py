@@ -160,22 +160,25 @@ class MushroomBodyNCA(nn.Module):
 
         # Raw compartment readout sum_k W_mb[k, c] * Out_{k, c}^{KC} normalized by active KC count
         norm_div = max(1.0, float((kc_act > 0).sum().item()))
+        naive_mbon = kc_comp_out.sum(dim=0) / norm_div
         raw_mbon = (self.w_mb * kc_comp_out).sum(dim=0) / norm_div
         raw_mbon = raw_mbon * self.mbon_active_mask
 
         # Feedforward lateral inhibition MBON-gamma1pedc (0) -| MBON-gamma5 (4) (Sci Rep 2022, Springer/Nawrot!):
-        # Before aversive learning, MBON-g1pedc is high (1.0) and suppresses MBON-g5 (avoidance).
+        # Before aversive learning, MBON-g1pedc is high and suppresses MBON-g5 (avoidance).
         # After aversive LTD depresses KC -> MBON-g1pedc, MBON-g1pedc drops, disinhibiting MBON-g5!
         mbon_rates = raw_mbon.clone()
         g1_rate = float(mbon_rates[COMP_GAMMA1].item())
         mbon_rates[COMP_GAMMA5] = mbon_rates[COMP_GAMMA5] / (1.0 + 2.5 * g1_rate)
 
-        # Net learned valence: deviation from naive baseline balance (0.0 before any DAN LTD learning!)
+        # Net learned valence: deviation from naive (W_mb == 1.0) baseline balance (exact 0.0 before any DAN LTD learning!)
         # Note: if either gamma1 (0) or gamma5 (4) is blocked by shibire, the g1<->g5 opponent balance collapses!
         if float(self.mbon_active_mask[COMP_GAMMA1].item()) == 0.0 or float(self.mbon_active_mask[COMP_GAMMA5].item()) == 0.0:
             net_valence = 0.0
         else:
-            baseline_offset = -1.0 / (1.0 + 2.5)  # Baseline when all W_mb == 1.0
+            r0_g1 = float(naive_mbon[COMP_GAMMA1].item())
+            r0_g5 = float(naive_mbon[COMP_GAMMA5].item()) / (1.0 + 2.5 * r0_g1)
+            baseline_offset = float((naive_mbon * self.mbon_valence_sign).sum().item() + float(naive_mbon[COMP_GAMMA5].item()) - r0_g5)
             net_valence = float((mbon_rates * self.mbon_valence_sign).sum().item() - baseline_offset)
 
         # Direct Efference Copy from Descending Neurons (37% VNC DNs -> DANs, Science 2023 PMC7614541!)
