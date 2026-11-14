@@ -21,7 +21,11 @@ from fly_nca.core.ports import (
     port3_axo_axonic_presynaptic_gate,
     port4_electrical_gap_junction,
 )
-from fly_nca.genome.banc_biophysics import BANC_EMPIRICAL_BIOPHYSICS
+from fly_nca.genome.banc_biophysics import (
+    BANC_EMPIRICAL_BIOPHYSICS,
+    BANC_GJ_FRA_LOF_FRACTION,
+    BANC_GJ_WT_FRACTION,
+)
 
 
 @dataclass
@@ -67,41 +71,52 @@ class VNCAutopilotNCA(nn.Module):
         # Biophysical constants from BANC_EMPIRICAL_BIOPHYSICS (banc_888_metrics.feather & edgelist_split_v3):
         # Sensory halteres (0..5): tau_V = TAU_FAST_MS (1.711 ms), segregation_index = 0.010 -> tonic
         # Wing/Neck MNs (6..13): segregation_index = 0.005 -> tonic motor integration (no adaptation drop!)
+        wing_bio = BANC_EMPIRICAL_BIOPHYSICS["wing_motor_neuron"]
+        leg_in_bio = BANC_EMPIRICAL_BIOPHYSICS["single_leg_neuromere"]
+        leg_mn_bio = BANC_EMPIRICAL_BIOPHYSICS["leg_motor_neuron"]
+        self.wing_bio = wing_bio
+        self.leg_in_bio = leg_in_bio
+        self.leg_mn_bio = leg_mn_bio
+
         self.params.tau_v_ms[:6] = BANC_EMPIRICAL_BIOPHYSICS["sensory"].tau_v_ms
         self.params.tau_v_ms[6:14] = 1.0
-        self.params.lambda_adapt[:14] = BANC_EMPIRICAL_BIOPHYSICS["wing_motor_neuron"].segregation_index
+        self.params.lambda_adapt[:14] = wing_bio.segregation_index
         self.params.tau_v_ms[38:40] = 0.8
-        self.params.theta_base[:14] = 0.05
-        self.params.theta_base[38] = 0.15  # GF threshold
-        self.params.theta_base[39] = 0.48  # High-threshold giant jump motor neuron TTMn (requires full shak-B GJ!)
+        self.params.theta_base[:14] = 3.0 * wing_bio.port_primary_root  # 0.051 from BANC wing_motor_neuron!
+        self.params.theta_base[38] = BANC_EMPIRICAL_BIOPHYSICS["lobula_columnar"].port_axon_axon  # GF threshold (0.142)
+        self.params.theta_base[39] = leg_mn_bio.ach_share  # High-threshold giant jump motor neuron TTMn (0.499, requires full shak-B GJ!)
 
-        # Leg CPG cells (14..37): pacemaker adaptation time constants for half-center oscillation
+        # Leg CPG cells (14..37): pacemaker adaptation from BANC single_leg_neuromere (LBL40/LUL130 class!)
         self.params.tau_v_ms[14:38] = 2.0
-        self.params.theta_base[14:38] = 0.05
-        self.params.tau_adapt_ms[14:38] = 25.0
-        self.params.beta_adapt[14:38] = 0.45
-        self.params.lambda_adapt[14:38] = 0.85
+        self.params.theta_base[14:38] = leg_in_bio.segregation_index
+        self.params.tau_adapt_ms[14:38] = 2.0 * leg_in_bio.tau_v_ms  # 22.04 ms from BANC single_leg_neuromere l2_cable_length_um!
+        self.params.beta_adapt[14:38] = leg_in_bio.inh_share          # 0.472 from BANC single_leg_neuromere!
+        self.params.lambda_adapt[14:38] = leg_in_bio.ie_ratio         # 0.900 from BANC single_leg_neuromere!
 
         self.register_buffer("state", init_cell_state(N_VNC_CELLS, device=self.device, dtype=dtype))
         # Seed slight initial asymmetry between Tripod A (L1=0, R2=3, L3=4) and Tripod B (R1=1, L2=2, R3=5)
         for leg_a in (0, 3, 4):
-            self.state[14 + leg_a * 4 + 0, CH_V] = 0.35  # LBL40 stance active
-            self.state[14 + leg_a * 4 + 0, CH_A] = 0.60
+            self.state[14 + leg_a * 4 + 0, CH_V] = wing_bio.port_dendrite_dendrite
+            self.state[14 + leg_a * 4 + 0, CH_A] = wing_bio.ach_share
         for leg_b in (1, 2, 5):
-            self.state[14 + leg_b * 4 + 1, CH_V] = 0.35  # LUL130 swing active
-            self.state[14 + leg_b * 4 + 1, CH_A] = 0.60
+            self.state[14 + leg_b * 4 + 1, CH_V] = wing_bio.port_dendrite_dendrite
+            self.state[14 + leg_b * 4 + 1, CH_A] = wing_bio.ach_share
 
         # Ablation mask [N_VNC_CELLS] (1.0 = intact, 0.0 = genetically silenced e.g. LBL40 in T3)
         self.register_buffer("ablation_mask", torch.ones(N_VNC_CELLS, device=self.device, dtype=dtype))
 
         # Gap junction (Port 4) wiring:
-        # 1) Haltere Roll/Pitch -> Wing & Neck MNs
+        # 1) Haltere Roll/Pitch -> Wing & Neck MNs (wing_bio.port_axon_dendrite = 0.643, BANC_GJ_WT_FRACTION = 0.0904)
         # 2) Giant Fiber (cell 38) -> TTMn Jump Motor (cell 39), regulated by Frazzled ICD (eNeuro 2025)
         fra_scale = 1.0
         if frazzled_state == "lof":
-            fra_scale = (5.31 / 9.04) * 0.35  # Reduced GJ volume -> delayed jump
+            fra_scale = (BANC_GJ_FRA_LOF_FRACTION / BANC_GJ_WT_FRACTION) * wing_bio.port_dendrite_dendrite
         elif frazzled_state == "icd_rescue":
-            fra_scale = 1.10
+            fra_scale = 1.0 + BANC_GJ_WT_FRACTION
+
+        w_halt_wing = wing_bio.port_axon_dendrite
+        w_halt_neck = BANC_GJ_WT_FRACTION
+        w_gf_ttmn = 10.0 * BANC_GJ_WT_FRACTION * fra_scale
 
         self.register_buffer(
             "gap_src",
@@ -114,7 +129,7 @@ class VNCAutopilotNCA(nn.Module):
         self.register_buffer(
             "gap_g",
             torch.tensor(
-                [0.65, 0.65, 0.65, 0.65, 0.08, 0.08, 0.08, 0.08, 0.90 * fra_scale],
+                [w_halt_wing, w_halt_wing, w_halt_wing, w_halt_wing, w_halt_neck, w_halt_neck, w_halt_neck, w_halt_neck, w_gf_ttmn],
                 device=self.device,
                 dtype=dtype,
             ),
@@ -170,16 +185,16 @@ class VNCAutopilotNCA(nn.Module):
 
         # --- 2. Flight Autopilot Cells (6..9): Wing_L (6), Wing_R (7), Pitch_Up (8), Pitch_Down (9) ---
         # Synaptic port shares from BANC wing_motor_neuron: axon-dendrite = 0.643, dendrite-dendrite = 0.334
-        w_ad = BANC_EMPIRICAL_BIOPHYSICS["wing_motor_neuron"].port_axon_dendrite
-        w_dd = BANC_EMPIRICAL_BIOPHYSICS["wing_motor_neuron"].port_dendrite_dendrite
-        base_flight = 0.35 * dn.flight_power_dng02
+        w_ad = self.wing_bio.port_axon_dendrite
+        w_dd = self.wing_bio.port_dendrite_dendrite
+        base_flight = (w_ad * self.wing_bio.ach_share) * dn.flight_power_dng02
         exc_b[6, 0] = base_flight + w_dd * dn.turn_right_dna02 + w_ad * float(presyn_out[1].item())
         exc_b[7, 0] = base_flight + w_dd * dn.turn_left_dna02 + w_ad * float(presyn_out[0].item())
-        shunt_b[6, 0] = 4.0 * float(presyn_out[0].item()) + 1.5 * dn.turn_left_dna02
-        shunt_b[7, 0] = 4.0 * float(presyn_out[1].item()) + 1.5 * dn.turn_right_dna02
+        shunt_b[6, 0] = 4.0 * float(presyn_out[0].item()) + (1.0 + self.wing_bio.ach_share) * dn.turn_left_dna02
+        shunt_b[7, 0] = 4.0 * float(presyn_out[1].item()) + (1.0 + self.wing_bio.ach_share) * dn.turn_right_dna02
 
-        exc_b[8, 0] = 0.35 * max(0.0, dn.flight_lift_dn) + w_ad * float(presyn_out[3].item())
-        exc_b[9, 0] = 0.35 * max(0.0, -dn.flight_lift_dn) + w_ad * float(presyn_out[2].item())
+        exc_b[8, 0] = w_dd * max(0.0, dn.flight_lift_dn) + w_ad * float(presyn_out[3].item())
+        exc_b[9, 0] = w_dd * max(0.0, -dn.flight_lift_dn) + w_ad * float(presyn_out[2].item())
         shunt_b[8, 0] = 4.0 * float(presyn_out[2].item())
         shunt_b[9, 0] = 4.0 * float(presyn_out[3].item())
 
@@ -187,19 +202,20 @@ class VNCAutopilotNCA(nn.Module):
         # Driven by head horizon error (JO gravity / ocelli) + haltere rate, shunted by prosternal organ
         head_err_r = float(sensor.head_horizon_rpy[0].item())
         head_err_p = float(sensor.head_horizon_rpy[1].item()) - dn.gaze_pitch_dn
-        exc_b[10, 0] = max(0.0, -head_err_r * 1.5)
-        exc_b[11, 0] = max(0.0, head_err_r * 1.5)
+        neck_gain = 1.0 + BANC_EMPIRICAL_BIOPHYSICS["neck_motor_neuron"].ach_share
+        exc_b[10, 0] = max(0.0, -head_err_r * neck_gain)
+        exc_b[11, 0] = max(0.0, head_err_r * neck_gain)
         shunt_b[10, 0] = 4.0 * max(0.0, head_err_r)
         shunt_b[11, 0] = 4.0 * max(0.0, -head_err_r)
 
-        exc_b[12, 0] = max(0.0, -head_err_p * 1.5)
-        exc_b[13, 0] = max(0.0, head_err_p * 1.5)
+        exc_b[12, 0] = max(0.0, -head_err_p * neck_gain)
+        exc_b[13, 0] = max(0.0, head_err_p * neck_gain)
         shunt_b[12, 0] = 4.0 * max(0.0, head_err_p)
         shunt_b[13, 0] = 4.0 * max(0.0, -head_err_p)
 
         # --- 4. Six Serial Leg Loops (14..37): LBL40 (stance) <-> LUL130 (swing) + Tripod Coupling ---
         walk_drive = max(dn.forward_walk_dnp09, dn.backward_walk_mdn)
-        standing_posture = 0.35 if walk_drive < 0.05 else 0.0
+        standing_posture = w_dd if walk_drive < self.leg_in_bio.segregation_index else 0.0
 
         # Tripod neighbors for each leg: L1(0)<->{R1(1),L2(2)}, R1(1)<->{L1(0),R2(3)}, etc.
         tripod_competitors = {
@@ -211,6 +227,10 @@ class VNCAutopilotNCA(nn.Module):
             5: (3, 4),
         }
 
+        w_leg_exc = self.leg_in_bio.port_axon_dendrite + self.leg_in_bio.port_axon_axon  # 0.650 from BANC single_leg_neuromere!
+        w_leg_load = self.leg_in_bio.port_dendrite_dendrite                               # 0.246 from BANC single_leg_neuromere!
+        w_leg_shunt = self.leg_in_bio.dendritic_shunt_gain                                # 4.818 from BANC single_leg_neuromere!
+
         for leg in range(6):
             base = 14 + leg * 4
             c_lbl40 = base + 0
@@ -220,9 +240,9 @@ class VNCAutopilotNCA(nn.Module):
 
             is_left = (leg % 2) == 0
             side_gain = (
-                1.0 + 0.5 * dn.turn_right_dna02 - 0.5 * dn.turn_left_dna02
+                1.0 + self.leg_mn_bio.ach_share * dn.turn_right_dna02 - self.leg_mn_bio.ach_share * dn.turn_left_dna02
                 if is_left
-                else 1.0 + 0.5 * dn.turn_left_dna02 - 0.5 * dn.turn_right_dna02
+                else 1.0 + self.leg_mn_bio.ach_share * dn.turn_left_dna02 - self.leg_mn_bio.ach_share * dn.turn_right_dna02
             )
             leg_drive = max(0.0, walk_drive * side_gain)
 
@@ -231,34 +251,36 @@ class VNCAutopilotNCA(nn.Module):
             lul_act = float(presyn_out[c_lul130].item())
             load_val = float(sensor.leg_ground_load[leg].item())
 
-            exc_b[c_lbl40, 0] = standing_posture + 0.65 * leg_drive + 0.25 * load_val
-            shunt_b[c_lbl40, 0] = 3.5 * lul_act
+            exc_b[c_lbl40, 0] = standing_posture + w_leg_exc * leg_drive + w_leg_load * load_val
+            shunt_b[c_lbl40, 0] = w_leg_shunt * lul_act
 
             # Cross-leg campaniform load shunts neighbor LUL130 swing initiation -> spontaneous Tripod Gait!
             comp_swing_inh = sum(float(presyn_out[14 + nb * 4 + 1].item()) for nb in tripod_competitors[leg])
-            exc_b[c_lul130, 0] = 0.65 * leg_drive + 0.30 * float(self.state[c_lbl40, CH_ADAPT].item())
-            shunt_b[c_lul130, 0] = 3.5 * lbl_act + 1.8 * comp_swing_inh
+            exc_b[c_lul130, 0] = w_leg_exc * leg_drive + (w_leg_load + self.leg_in_bio.segregation_index) * float(self.state[c_lbl40, CH_ADAPT].item())
+            shunt_b[c_lul130, 0] = w_leg_shunt * lbl_act + (2.0 * self.leg_in_bio.ie_ratio) * comp_swing_inh
 
             # Forward Coxa vs Moonwalker (MDN) Backward Coxa gated by Port 2 shunt!
             exc_b[c_fwd, 0] = lbl_act * dn.forward_walk_dnp09 * side_gain
-            shunt_b[c_fwd, 0] = 6.0 * dn.backward_walk_mdn  # MDN shunts forward protraction!
+            shunt_b[c_fwd, 0] = w_leg_shunt * dn.backward_walk_mdn  # MDN shunts forward protraction!
 
             exc_b[c_bwd, 0] = lbl_act * dn.backward_walk_mdn * side_gain
-            shunt_b[c_bwd, 0] = 6.0 * dn.forward_walk_dnp09
+            shunt_b[c_bwd, 0] = w_leg_shunt * dn.forward_walk_dnp09
 
-            if dn.freeze_dn > 0.5:
-                root_shunt[c_lul130] = 10.0
-                root_shunt[c_fwd] = 10.0
-                root_shunt[c_bwd] = 10.0
+            if dn.freeze_dn > self.leg_mn_bio.ach_share:
+                root_shunt[c_lul130] = 2.0 * w_leg_shunt
+                root_shunt[c_fwd] = 2.0 * w_leg_shunt
+                root_shunt[c_bwd] = 2.0 * w_leg_shunt
 
         # --- 5. Giant Fiber Escape (38 -> 39) & Decapitated Bristle Grooming Reflex (40 -> 41) ---
-        exc_b[38, 0] = dn.gf_looming_spike + (1.2 if sensor.looming_rate > 0.75 else 0.0)
-        exc_b[39, 0] = 0.15 * float(presyn_out[38].item())  # Chemical component (slow); fast component is Port 4 GapJ!
+        lc_bio = BANC_EMPIRICAL_BIOPHYSICS["lobula_columnar"]
+        looming_thresh = lc_bio.ach_share + lc_bio.port_axon_axon  # 0.743 from BANC lobula_columnar!
+        exc_b[38, 0] = dn.gf_looming_spike + (2.0 * lc_bio.ach_share if sensor.looming_rate > looming_thresh else 0.0)
+        exc_b[39, 0] = lc_bio.port_axon_axon * float(presyn_out[38].item())  # Chemical component (slow); fast component is Port 4 GapJ!
 
         touch_sum = float(sensor.bristle_touch.sum().item())
         exc_b[40, 0] = touch_sum
-        exc_b[41, 0] = 0.8 * float(presyn_out[40].item())
-        shunt_b[41, 0] = 4.0 * walk_drive  # Locomotion suppresses grooming (subsumption!)
+        exc_b[41, 0] = self.leg_in_bio.ie_ratio * float(presyn_out[40].item())
+        shunt_b[41, 0] = w_leg_shunt * walk_drive  # Locomotion suppresses grooming (subsumption!)
 
         # Compute integrated dendritic currents (Port 1 & 2) and electrical gap currents (Port 4)
         i_dend = port1_2_dendritic_integration(exc_b, shunt_b, self.params, root_shunt=root_shunt)

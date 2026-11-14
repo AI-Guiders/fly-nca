@@ -57,8 +57,12 @@ class MushroomBodyNCA(nn.Module):
         self.n_glomeruli = int(n_glomeruli)
         # Default sparsity = measured I/E synapse ratio on Kenyon cells in BANC v888 (0.046 = 4.6%!)
         kc_bio = BANC_EMPIRICAL_BIOPHYSICS["kenyon_cell"]
+        kc_bio = BANC_EMPIRICAL_BIOPHYSICS["kenyon_cell"]
         mbon_bio = BANC_EMPIRICAL_BIOPHYSICS["mushroom_body_output_neuron"]
         dan_bio = BANC_EMPIRICAL_BIOPHYSICS["mushroom_body_dopaminergic_neuron"]
+        self.kc_bio = kc_bio
+        self.mbon_bio = mbon_bio
+        self.dan_bio = dan_bio
         self.target_sparsity = float(target_sparsity) if target_sparsity is not None else kc_bio.ie_ratio
         self.device = torch.device(device)
         self.dtype = dtype
@@ -147,8 +151,8 @@ class MushroomBodyNCA(nn.Module):
         # Hunger (NPF inhibiting MP1 DA) gates open the consolidated food-seeking compartments (alpha/beta 9..14)
         aa_exc = torch.zeros((self.n_kc, N_MB_COMPARTMENTS), device=self.device, dtype=self.dtype)
         aa_inh = torch.zeros((self.n_kc, N_MB_COMPARTMENTS), device=self.device, dtype=self.dtype)
-        if hunger_mp1_gate < 0.2:
-            aa_inh[:, 9:15] = 1.5  # Satiety (MP1 active) dampens LTM food-seeking readout
+        if hunger_mp1_gate < self.dan_bio.inh_share:
+            aa_inh[:, 9:15] = self.mbon_bio.dendritic_shunt_gain * 0.5  # Satiety (MP1 active) dampens LTM food-seeking readout
 
         kc_comp_out = port3_axo_axonic_presynaptic_gate(
             kc_act.unsqueeze(-1),
@@ -165,11 +169,11 @@ class MushroomBodyNCA(nn.Module):
         raw_mbon = raw_mbon * self.mbon_active_mask
 
         # Feedforward lateral inhibition MBON-gamma1pedc (0) -| MBON-gamma5 (4) (Sci Rep 2022, Springer/Nawrot!):
-        # Before aversive learning, MBON-g1pedc is high and suppresses MBON-g5 (avoidance).
-        # After aversive LTD depresses KC -> MBON-g1pedc, MBON-g1pedc drops, disinhibiting MBON-g5!
+        # Shunt gain = mbon_bio.dendritic_shunt_gain (2.774 from BANC mushroom_body_output_neuron!)
+        g1_g5_shunt = self.mbon_bio.dendritic_shunt_gain
         mbon_rates = raw_mbon.clone()
         g1_rate = float(mbon_rates[COMP_GAMMA1].item())
-        mbon_rates[COMP_GAMMA5] = mbon_rates[COMP_GAMMA5] / (1.0 + 2.5 * g1_rate)
+        mbon_rates[COMP_GAMMA5] = mbon_rates[COMP_GAMMA5] / (1.0 + g1_g5_shunt * g1_rate)
 
         # Net learned valence: deviation from naive (W_mb == 1.0) baseline balance (exact 0.0 before any DAN LTD learning!)
         # Note: if either gamma1 (0) or gamma5 (4) is blocked by shibire, the g1<->g5 opponent balance collapses!
@@ -177,7 +181,7 @@ class MushroomBodyNCA(nn.Module):
             net_valence = 0.0
         else:
             r0_g1 = float(naive_mbon[COMP_GAMMA1].item())
-            r0_g5 = float(naive_mbon[COMP_GAMMA5].item()) / (1.0 + 2.5 * r0_g1)
+            r0_g5 = float(naive_mbon[COMP_GAMMA5].item()) / (1.0 + g1_g5_shunt * r0_g1)
             baseline_offset = float((naive_mbon * self.mbon_valence_sign).sum().item() + float(naive_mbon[COMP_GAMMA5].item()) - r0_g5)
             net_valence = float((mbon_rates * self.mbon_valence_sign).sum().item() - baseline_offset)
 
@@ -186,7 +190,7 @@ class MushroomBodyNCA(nn.Module):
         if dn_efference_copy is not None and dn_efference_copy.numel() > 0:
             eff_bonus = BANC_VNC_DN_EFFERENCE_FRACTION * float(dn_efference_copy[0].item())
 
-        # Teacher DAN activity with prediction-error feedback (-MBON_c):
+        # Teacher DAN activity with prediction-error feedback (-dan_bio.inh_share * MBON_c):
         # - Aversive PPL1 DANs innervate Approach compartments (even indices, especially gamma1 = 0!)
         # - Appetitive PAM DANs innervate Avoid compartments (odd indices & gamma5 = 4!)
         dan_signals = torch.zeros(N_MB_COMPARTMENTS, device=self.device, dtype=self.dtype)
@@ -196,14 +200,14 @@ class MushroomBodyNCA(nn.Module):
         for c in range(N_MB_COMPARTMENTS):
             if self.mbon_valence_sign[c] > 0:
                 # Approach MBON compartment: taught (depressed via LTD!) by aversive PPL1 DAN
-                if punish_total > 0.05:
+                if punish_total > self.kc_bio.ie_ratio:
                     # Sci Rep 2022: associative aversive plasticity is localized to gamma1 (c=0) in STM!
                     scale_c = 1.0 if (c == COMP_GAMMA1 or c >= 5) else 0.0
-                    dan_signals[c] = max(0.0, scale_c * punish_total - 0.2 * float(mbon_rates[c].item()))
+                    dan_signals[c] = max(0.0, scale_c * punish_total - self.dan_bio.inh_share * float(mbon_rates[c].item()))
             else:
                 # Avoid MBON compartment: taught (depressed via LTD!) by appetitive PAM DAN
-                if reward_total > 0.05:
-                    dan_signals[c] = max(0.0, reward_total - 0.2 * float(mbon_rates[c].item()))
+                if reward_total > self.kc_bio.ie_ratio:
+                    dan_signals[c] = max(0.0, reward_total - self.dan_bio.inh_share * float(mbon_rates[c].item()))
 
         # Synaptic Plasticity Rule (Anti-Hebbian LTD on active KC x DAN compartments):
         if float(dan_signals.max().item()) > 0.0:
@@ -213,19 +217,23 @@ class MushroomBodyNCA(nn.Module):
                 * dan_signals.unsqueeze(0)
                 * self.w_mb
             )
-            self.w_mb = (self.w_mb - ltd_delta).clamp(0.05, 1.0)
+            self.w_mb = (self.w_mb - ltd_delta).clamp(self.kc_bio.ie_ratio, 1.0)
 
         # VPM4 (OA + Glu cotransmission) -> GluCla inhibition of MBON-11 (gamma1 GABA) -> Aggression escalation
         # Presynaptic autoreceptors OAa2R / mGluR brake VPM4 release; knockdown causes boxing escalation (Sci Adv 2026)!
         if vpm4_octopamine_drive > 0.0:
-            self.vpm4_auto_r = min(1.0, 0.7 * self.vpm4_auto_r + 0.6 * vpm4_octopamine_drive)
+            self.vpm4_auto_r = min(
+                1.0,
+                (1.0 - self.dan_bio.mod_share) * self.vpm4_auto_r
+                + (self.dan_bio.ach_share + self.dan_bio.inh_share) * vpm4_octopamine_drive,
+            )
         else:
-            self.vpm4_auto_r *= 0.85
+            self.vpm4_auto_r *= 1.0 - self.mbon_bio.port_axon_axon
 
-        auto_gain = 2.5 if self.vpm4_autoreceptor_intact else 0.0
+        auto_gain = self.mbon_bio.dendritic_shunt_gain if self.vpm4_autoreceptor_intact else 0.0
         eff_vpm4 = vpm4_octopamine_drive / (1.0 + auto_gain * self.vpm4_auto_r)
         # VPM4 GluCla shunts MBON-11 (which normally holds tonic GABA Rdl inhibition on aggression)
-        mbon11_tonic_gaba = 1.0 / (1.0 + 3.0 * eff_vpm4)
+        mbon11_tonic_gaba = 1.0 / (1.0 + self.mbon_bio.dendritic_shunt_gain * eff_vpm4)
         aggression_boxing = max(0.0, 1.0 - mbon11_tonic_gaba)
 
         return MBStepOutput(

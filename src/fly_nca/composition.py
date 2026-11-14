@@ -9,6 +9,10 @@ import torch.nn as nn
 from fly_nca.body import FastTensorArena4D, MotorOut, SensorIn
 from fly_nca.core import GlialSubstrateNCA, HemolymphState
 from fly_nca.genome import FlyGenome, develop_fly_from_genome
+from fly_nca.genome.banc_biophysics import (
+    BANC_EMPIRICAL_BIOPHYSICS,
+    BANC_ORGAN_INPUT_MATRIX,
+)
 from fly_nca.nervous import (
     BiologicalPort,
     ImpulseChannel,
@@ -100,6 +104,9 @@ class FlyNCAComposition(nn.Module):
 
         with rec.channel(ImpulseChannel.COGNITIVE_FRAME) as imp:
             sensor: SensorIn = arena.step_physics(MotorOut.zeros(device=self.device, dtype=self.dtype), dt_ms=0.0)
+            lc_bio = BANC_EMPIRICAL_BIOPHYSICS["lobula_columnar"]
+            dan_bio = BANC_EMPIRICAL_BIOPHYSICS["mushroom_body_dopaminergic_neuron"]
+            looming_thresh = lc_bio.ach_share + lc_bio.port_axon_axon  # 0.743 from BANC lobula_columnar
 
             # 1. Autonomous Optic Lobe Radar (OL-NCA, 892 hex columns -> AOTU/BU + VPN)
             vis = self.optic_lobe.step_optic_lobe(sensor, dt_ms=4.0)
@@ -112,12 +119,12 @@ class FlyNCAComposition(nn.Module):
                     "bar_salience_lc11": round(float(vis.lc11_small_target), 4),
                 },
             )
-            if vis.lc4_lplc2_looming > 0.75:
+            if vis.lc4_lplc2_looming > looming_thresh:
                 imp.threshold(
                     "optic_lobe.lc4_to_gf_escape",
                     organ="OL",
                     port=BiologicalPort.PORT4_SHAKB_GAP,
-                    reason=f"LC4 looming {vis.lc4_lplc2_looming:.2f} > 0.75 -> Giant Fiber shak-B electrical spike",
+                    reason=f"LC4 looming {vis.lc4_lplc2_looming:.2f} > {looming_thresh:.3f} -> Giant Fiber shak-B electrical spike",
                     inputs={"lc4_looming": round(float(vis.lc4_lplc2_looming), 4)},
                 )
 
@@ -147,8 +154,8 @@ class FlyNCAComposition(nn.Module):
 
             # 3. Mushroom Body (Calyx APL sparse KC -> 15 compartments + DN->DAN efference copy weighted by CAM tract)
             hunger = max(0.0, 1.0 - self.hemolymph.sugar_level)
-            w_al_to_mb = self.developed.tract_weight("AL", "MB") / 0.3189
-            w_vnc_to_mb = self.developed.tract_weight("VNC", "MB") / 0.0281
+            w_al_to_mb = self.developed.tract_weight("AL", "MB") / BANC_ORGAN_INPUT_MATRIX[1][3]
+            w_vnc_to_mb = self.developed.tract_weight("VNC", "MB") / BANC_ORGAN_INPUT_MATRIX[6][3]
             mb_read = self.mushroom_body.step_mb(
                 pn_glomeruli_50=chem.pn_glomeruli_50 * w_al_to_mb,
                 sweet_reward_us=chem.sweet_reward_us,
@@ -219,7 +226,7 @@ class FlyNCAComposition(nn.Module):
             )
 
             # 5. Central Complex Navigator & dFB Sleep Switch (weighted by CAM-assembled LH_SPIN -> CX tract!)
-            w_lh_to_cx = self.developed.tract_weight("LH_SPIN", "CX") / 0.1192
+            w_lh_to_cx = self.developed.tract_weight("LH_SPIN", "CX") / BANC_ORGAN_INPUT_MATRIX[2][4]
             sleep_need = (
                 float(sleep_need_override)
                 if sleep_need_override is not None
@@ -255,7 +262,7 @@ class FlyNCAComposition(nn.Module):
 
             # If in Active Sleep (REM-like phase of dFB), consolidate MB gamma traces into alpha/beta via CREB!
             if cx_out.sleep_phase == "ACTIVE_REM":
-                self.mushroom_body.consolidate_sleep_creb(creb_intact=creb_intact, transfer_rate=0.35)
+                self.mushroom_body.consolidate_sleep_creb(creb_intact=creb_intact, transfer_rate=dan_bio.mod_share)
                 imp.threshold(
                     "central_complex.dfb_active_sleep_creb",
                     organ="CX",
@@ -272,7 +279,7 @@ class FlyNCAComposition(nn.Module):
                 turn_right_dna02=cx_out.dn_command.turn_right_dna02,
                 flight_power_dng02=cx_out.dn_command.flight_power_dng02,
                 flight_lift_dn=cx_out.dn_command.flight_lift_dn,
-                gf_looming_spike=(1.2 if vis.lc4_lplc2_looming > 0.75 else 0.0),
+                gf_looming_spike=(2.0 * lc_bio.ach_share if vis.lc4_lplc2_looming > looming_thresh else 0.0),
                 freeze_dn=cx_out.dn_command.freeze_dn,
                 proboscis_fdg=chem.fdg_proboscis_cmd,
             )

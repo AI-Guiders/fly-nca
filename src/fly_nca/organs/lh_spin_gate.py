@@ -33,6 +33,7 @@ from fly_nca.genome.banc_biophysics import (
     BANC_EMPIRICAL_BIOPHYSICS,
     BANC_LHON_MULTIMODAL_FRACTION,
     BANC_LHON_TO_DAN_COVERAGE,
+    PD2A1_CONC_THRESHOLD,
 )
 
 N_CLTM_LHON: int = 64
@@ -154,12 +155,12 @@ class LHSpinGateNCA(nn.Module):
     ) -> float:
         """eLife 2020 (PMC7145822): PD2a1/b1 cell (64) gated by concentration threshold, slow Ca2+ integration, and NPF hunger shunt."""
         hunger = max(0.0, 1.0 - hemolymph.sugar_level)
-        # Concentration threshold on dendritic branch (10^-3 = 0.001 fails threshold; 10^-2 = 0.02 passes)
-        conc_drive = max(0.0, float(aversive_odor_conc) - 0.005) * 40.0
+        # Concentration threshold on dendritic branch (PD2A1_CONC_THRESHOLD = 0.005 from eLife 2020 PMC7145822)
+        conc_drive = max(0.0, float(aversive_odor_conc) - PD2A1_CONC_THRESHOLD) * 40.0
         # Slow temporal integration window (40 s < threshold, >=80 s saturates)
         time_gate = max(0.0, min(1.0, (float(exposure_time_s) - 50.0) / 30.0))
-        # Starvation NPF/sNPF shunts PD2a1/b1 at the root!
-        hunger_shunt = 50.0 if hunger > 0.65 else 0.0
+        # Starvation NPF/sNPF shunts PD2a1/b1 at the root when hunger > BANC_LHON_MULTIMODAL_FRACTION (0.6556)!
+        hunger_shunt = 50.0 if hunger > BANC_LHON_MULTIMODAL_FRACTION else 0.0
 
         exc = torch.tensor([[conc_drive * time_gate]], device=self.device, dtype=self.dtype)
         shunt = torch.tensor([[hunger_shunt]], device=self.device, dtype=self.dtype)
