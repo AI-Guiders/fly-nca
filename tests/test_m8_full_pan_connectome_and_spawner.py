@@ -63,7 +63,7 @@ def test_fly_spawner_valid_genomes_and_male_female_social_interactions() -> None
     assert snap_f["behavior"] in ("FEMALE_SONG_RECEPTIVITY", "FEMALE_OVIPOSITION")
     assert snap_f["female_pc1_rate"] > 0.15
 
-    # B. Two Males (XY + XY) on the central food cup -> rival cVA activates mAL & VPM4 -> MALE_BOXING_ESCALATION
+    # B. Two Males (X:A=0.5 -> Sxl OFF -> Tra OFF -> DsxM + FruM+) on food cup -> rival cVA -> MALE_BOXING_ESCALATION
     male_1 = spawner.spawn_fly(sex="M", pos_xyz=(0.001, 0.0, 0.0), yaw_rad=0.0)
     male_2 = spawner.spawn_fly(sex="M", pos_xyz=(-0.001, 0.0, 0.0), yaw_rad=3.14)
     fight_arena = MultiFlySocialArena4D(flies=[male_1, male_2])
@@ -73,3 +73,49 @@ def test_fly_spawner_valid_genomes_and_male_female_social_interactions() -> None
     assert snaps_fight[0]["behavior"] == "MALE_BOXING_ESCALATION"
     assert snaps_fight[0]["boxing_intensity"] > 0.25
     assert snaps_fight[1]["behavior"] == "MALE_BOXING_ESCALATION"
+
+    # C. Demir & Dickson (2005) / PMC10622783 Experiment:
+    # Transgenic female (X:A=1.0 -> Sxl ON -> Tra ON -> DsxF) overexpressing FruM (`fru_m_override=True`):
+    # Because Dsx = DsxF, male-specific P1 neurons are ABSENT (`male_p1_rate == 0.0`),
+    # yet FruM+ masculinizes VNC song circuits (`pIP10 -> TN1`) so the P1-less female courts and sings!
+    wt_target_female = spawner.spawn_fly(sex="F", pos_xyz=(0.002, 0.0, 0.0), yaw_rad=0.0)
+    frum_female = spawner.spawn_fly(sex="F", pos_xyz=(-0.002, 0.0, 0.0), yaw_rad=0.0, fru_m_override=True)
+    assert frum_female.genome.x_to_autosome_ratio == 1.0
+    assert frum_female.genome.dsx_isoform == "DsxF"
+    assert frum_female.genome.fru_m_active is True
+
+    frum_arena = MultiFlySocialArena4D(flies=[wt_target_female, frum_female])
+    snaps_frum = frum_arena.step_population(frames=4)
+    snap_frum_f = snaps_frum[1]
+    assert snap_frum_f["male_p1_rate"] == 0.0  # P1 neurons absent under DsxF!
+    assert snap_frum_f["wing_song_active"] is True
+    assert snap_frum_f["behavior"] == "FEMALE_FRUM_COURTSHIP_SONG"
+
+
+def test_syncytial_blastoderm_embryogenesis_and_nobel1995_mutants() -> None:
+    """3. Verify Syncytial Blastoderm -> Translational Repression -> Gap -> Zelda/Opa -> Hox NCA (zero linspace x!)."""
+    from fly_nca.genome import FlyGenome
+
+    genome = FlyGenome()
+
+    # A. Wild-type embryo: self-organizes all 8 Hox neuromeres (0..7) purely from pole boundary diffusion
+    wt = genome.run_syncytial_embryogenesis_nca(n_positions=64)
+    assert sorted(wt.segment_ids.unique().tolist()) == [0, 1, 2, 3, 4, 5, 6, 7]
+    # Translational repression: Caudal is repressed at anterior pole (0) by Bicoid; Hunchback is repressed at posterior (-1) by Nanos
+    assert float(wt.caudal_protein[0]) < float(wt.caudal_protein[-1]) * 0.35
+    assert float(wt.hunchback_protein[-1]) < float(wt.hunchback_protein[0]) * 0.25
+    # Posterior pole cells (primordial germ cells) bud off at posterior tip
+    assert float(wt.pole_cells_mask[-1]) == 1.0 and float(wt.pole_cells_mask[0]) == 0.0
+
+    # B. Maternal bicoid^- mutant (Nobel 1995): loses anterior Head & Thorax segments (0, 1, 2) -> bicaudal abdomen!
+    bcd_mut = genome.run_syncytial_embryogenesis_nca(n_positions=64, bcd_mutant=True)
+    bcd_segs = set(bcd_mut.segment_ids.unique().tolist())
+    assert 0 not in bcd_segs and 1 not in bcd_segs and 2 not in bcd_segs
+
+    # C. Maternal nanos^- mutant (Nobel 1995): unrepressed posterior Hunchback wipes out abdominal knirps domain!
+    nos_mut = genome.run_syncytial_embryogenesis_nca(n_positions=64, nos_mutant=True)
+    assert float(nos_mut.knirps_protein.max().item()) < 0.15
+
+    # D. Zygotic odd-paired (opa^-) pioneer mutant (PLoS Genetics 2021 PMC8516289): loses 7->14 stripe frequency doubling
+    opa_mut = genome.run_syncytial_embryogenesis_nca(n_positions=64, opa_mutant=True)
+    assert float((opa_mut.opa_14_stripes - opa_mut.zelda_7_stripes).abs().max().item()) == 0.0

@@ -115,12 +115,21 @@ class PanConnectomeSubstrate:
 
 
 class FullConnectomeFlyNCA(nn.Module):
-    """Complete 189,766-Cell Drosophila NCA Organism running on the empirical 5-port pan-connectome."""
+    """Complete 189,766-Cell Drosophila NCA Organism running on the empirical 5-port pan-connectome.
+
+    Sex determination follows the Drosophila cell-autonomous X:A -> Sxl -> Tra -> (Dsx, Fru) splicing cascade
+    (PMC10622783, Front Mol Neurosci 2023; Kimura et al. 2008; Demir & Dickson 2005; Kohl et al. 2013):
+    1) `dsx_isoform` ('DsxF' vs 'DsxM') controls sex-specific cell survival (apoptosis vs survival of P1 vs oviDN/vpoEN).
+    2) `fru_m_active` (bool) controls dendritic arborization & synaptic valence (e.g., DA1 -> aSP-f vs aSP-g cVA switch,
+       and VNC TN1/vPR6 courtship song generation even in P1-less DsxF + FruM+ females!).
+    """
 
     def __init__(
         self,
         sex: Literal["F", "M"] = "F",
         *,
+        dsx_isoform: Literal["DsxF", "DsxM"] | None = None,
+        fru_m_active: bool | None = None,
         foraging_Write_gain: float = 1.0,
         dopr1_learning_scale: float = 1.0,
         oaa2r_brake_scale: float = 1.0,
@@ -132,8 +141,11 @@ class FullConnectomeFlyNCA(nn.Module):
         super().__init__()
         self.device = torch.device(device)
         self.sex: Literal["F", "M"] = sex
+        self.dsx_isoform: Literal["DsxF", "DsxM"] = dsx_isoform or ("DsxF" if sex == "F" else "DsxM")
+        self.fru_m_active: bool = fru_m_active if fru_m_active is not None else (sex == "M")
         self.substrate = PanConnectomeSubstrate.get(self.device)
         n = self.substrate.n_total
+        cg = self.substrate.cell_groups
 
         self.foraging_gain = float(foraging_Write_gain)
         self.dopr1_learning_scale = float(dopr1_learning_scale)
@@ -142,13 +154,23 @@ class FullConnectomeFlyNCA(nn.Module):
         self.snpfr_hunger_scale = float(snpfr_hunger_scale)
         self.courtship_vigor_scale = float(courtship_vigor_scale)
 
-        # Sex-specific cell survival & expression mask (sxl -> tra -> dsx/fru):
-        # sex_code: 0=isomorphic (184,700), 1=shared_dimorphic (2,862), 2=female_specific (946), 3=male_specific (1,258)
+        # Cell-autonomous Dsx / Fru survival & expression mask (X:A -> Sxl -> Tra -> DsxF/DsxM + FruM):
+        # - DsxF triggers apoptosis of male-specific P1 cluster (PMC10622783: FruM females lack P1 because P1 requires DsxM!)
+        # - DsxM triggers apoptosis of female-specific oviDN/vpoEN/uterus neurons
+        # - FruM enables male VNC song circuits (TN1/vPR6) and pIP10 descending song drive
         sex_mask = torch.ones(n, device=self.device, dtype=torch.float32)
-        if sex == "F":
-            sex_mask[self.substrate.sex_code == 3] = 0.0  # Male-specific P1/pIP10/TN1 absent in XX female
+        if self.dsx_isoform == "DsxF":
+            sex_mask[self.substrate.sex_code == 3] = 0.0  # Male-specific P1 dies under DsxF
+            if self.fru_m_active:
+                # Demir & Dickson (2005) / Clyne & Miesenböck (2008) (PMC10622783):
+                # In DsxF + FruM+ females, P1 is absent, but FruM+ VNC song circuits (TN1/pIP10) are active!
+                sex_mask[cg["dimorphic_male_tn1_song"]] = 1.0
+                sex_mask[cg["dimorphic_male_pip10"]] = 1.0
         else:
-            sex_mask[self.substrate.sex_code == 2] = 0.0  # Female-specific oviDN/vpoEN/uterus absent in XY male
+            sex_mask[self.substrate.sex_code == 2] = 0.0  # Female-specific oviDN/vpoEN/uterus absent under DsxM
+            if not self.fru_m_active:
+                # DsxM + Fru- mutant male: P1 survives (DsxM), but FruM-dependent song/mAL arbors are silent
+                sex_mask[cg["dimorphic_male_tn1_song"]] = 0.0
         self.register_buffer("sex_cell_mask", sex_mask)
 
         # Living per-cell state vectors across all 189,766 cells:
@@ -243,27 +265,30 @@ class FullConnectomeFlyNCA(nn.Module):
         i_sens[cg["sens_haltere_right"]] = min(1.0, 0.3 + halt_mag)
         i_sens[cg["sens_crop_visceral"]] = float(sensor.crop_stretch)
 
-        # 6. Sexually dimorphic social decision circuits (FruM vs DsxF):
-        if self.sex == "M":
-            # Male (XY, FruM+): visual target (LC10a) + female mate cues excite P1 (pC1_1a..19) -> pIP10 -> TN1 wing song!
-            # Rival male cVA (when conspecific_is_female=False) activates mAL GABA brake on courtship and drives boxing!
+        # 6. Sexually dimorphic social decision circuits (X:A -> Sxl -> Tra -> DsxF/DsxM + Fru-/FruM, PMC10622783):
+        # Kohl et al. (2013) Cell / PMC10622783:
+        # - Under FruM+ (males & fru^M females), DA1 lPN connects to aSP-f/DC1 dendrites (repulsion/aggression to male cVA),
+        #   and LC10a + female cues drive courtship song (via P1 if DsxM, or directly via FruM+ pIP10/TN1 in DsxF+FruM+ females!).
+        # - Under Fru- (wild-type females), DA1 lPN connects to aSP-g dendrites (cVA attraction) + JO song drives pC1 receptivity!
+        if self.fru_m_active:
+            if cva_pheromone_conc > 0.0:
+                i_sens[cg["dimorphic_female_asp_f"]] = float(cva_pheromone_conc) * 1.2
             if sensor.small_target_salience > 0.1 and conspecific_is_female:
                 court_drive = float(sensor.small_target_salience) * (1.0 + mate_odor_conc) * self.courtship_vigor_scale
-                i_sens[cg["dimorphic_male_p1"]] = court_drive * 1.4
+                i_sens[cg["dimorphic_male_p1"]] = court_drive * 1.4  # Masked to 0.0 if DsxF killed P1!
                 i_sens[cg["dimorphic_male_pip10"]] = court_drive * 1.5
                 i_sens[cg["dimorphic_male_tn1_song"]] = court_drive * 1.5
             elif sensor.small_target_salience > 0.1 and not conspecific_is_female:
-                # Male-male encounter: mAL suppresses P1 courtship
                 i_sens[cg["dimorphic_male_mal"]] = (0.8 + cva_pheromone_conc) / max(0.3, self.oaa2r_brake_scale)
         else:
-            # Female (XX, DsxF): male courtship song (JO sound_vibration) + cVA (ORN_DA1 -> aSP-f) activates pC1 receptivity!
             if song_vib > 0.15 or cva_pheromone_conc > 0.15:
                 rec_drive = (0.6 * song_vib + 0.5 * cva_pheromone_conc) * self.courtship_vigor_scale
-                i_sens[cg["dimorphic_female_asp_f"]] = rec_drive * 1.2
+                i_sens[cg["dimorphic_female_asp_g"]] = rec_drive * 1.2
                 i_sens[cg["dimorphic_female_pc1"]] = rec_drive * 1.3
-            if substrate_yeast_rich and float(sensor.leg_ground_load.mean().item()) > 0.2:
-                i_sens[cg["dimorphic_female_vpo_ovi"]] = 1.2
-                i_sens[cg["eff_oviposition_uterus"]] = 1.1
+
+        if self.dsx_isoform == "DsxF" and substrate_yeast_rich and float(sensor.leg_ground_load.mean().item()) > 0.2:
+            i_sens[cg["dimorphic_female_vpo_ovi"]] = 1.2
+            i_sens[cg["eff_oviposition_uterus"]] = 1.1
 
         return i_sens * self.sex_cell_mask
 

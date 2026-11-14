@@ -1,10 +1,13 @@
-"""Genetic Fly Spawner & Multi-Fly 4D Social Arena (`XX` Females + `XY` Males on the 189,766-Cell Pan-Connectome).
+"""Genetic Fly Spawner & Multi-Fly 4D Social Arena (X:A -> Sxl -> Tra -> Dsx/Fru on the 189,766-Cell Pan-Connectome).
 
-Generates valid individual *Drosophila melanogaster* genomes with natural polygenic variation
-(`for^R` rover vs `for^s` sitter foraging polymorphism, `DopR1` learning sensitivity, `OAα2R/mGluR`
-presynaptic aggression brake, `shak-B` electrical coupling, `sNPFR` hunger gain, and `FruM / DsxF`
-courtship/receptivity vigor), instantiates each fly with the full 189,766-cell pan-connectome
-(`BANC v888` + `MCNS v1.0`), and simulates multi-fly social & foraging interactions in 4D spacetime.
+In *Drosophila melanogaster*, sex is determined cell-autonomously NOT by a Y chromosome (unlike mammals),
+but by the X-chromosome dose / X-to-autosome (`X:A`) ratio activating the `Sxl -> tra -> dsx / fru`
+alternative splicing cascade (Bridges 1921; Cline & Meyer; Front Mol Neurosci 2023 PMC10622783):
+- `X:A = 1.0` (2X:2A, including XXY) -> `Sxl ON` -> `Tra ON` -> `DsxF` + `Fru-` (Female);
+- `X:A = 0.5` (1X:2A, including X0)  -> `Sxl OFF` -> `Tra OFF` -> `DsxM` + `FruM+` (Male);
+- `Dsx` (`DsxF` vs `DsxM`) controls sex-specific cell survival (`P1` survives only under `DsxM`; `oviDN/vpoEN` under `DsxF`);
+- `FruM` controls dendritic arborization (`DA1 -> aSP-f` vs `aSP-g`, Kohl et al. 2013) and VNC song circuits (`TN1/pIP10`),
+  so `DsxF + FruM+` females (Demir & Dickson 2005) lack `P1` neurons yet still court and sing!
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ SocialBehaviorLabel = Literal[
     "FORAGING_SITTER",
     "FEEDING_PER",
     "MALE_COURTSHIP_SONG",
+    "FEMALE_FRUM_COURTSHIP_SONG",
     "MALE_BOXING_ESCALATION",
     "FEMALE_SONG_RECEPTIVITY",
     "FEMALE_OVIPOSITION",
@@ -38,10 +42,15 @@ SocialBehaviorLabel = Literal[
 
 @dataclass(frozen=True, slots=True)
 class IndividualFlyGenome:
-    """Valid individual Drosophila genome with chromosomal sex (XX/XY) and natural allelic variation."""
+    """Valid individual Drosophila genome with X:A -> Sxl -> Tra -> (DsxF/DsxM, Fru-/FruM) cascade & allelic variation."""
 
     fly_id: str
     sex: Literal["F", "M"]
+    x_to_autosome_ratio: float          # 1.0 (2X:2A female) or 0.5 (1X:2A male, e.g. X0 or XY)
+    sxl_active: bool                    # Sex-lethal splicing switch (ON when X:A >= 1.0)
+    tra_active: bool                    # transformer splicing switch (ON when Sxl is ON)
+    dsx_isoform: Literal["DsxF", "DsxM"]  # doublesex isoform (DsxF under Tra ON, DsxM under Tra OFF)
+    fru_m_active: bool                  # fruitless male isoform FruM (ON when Tra OFF, or in fru^M allele)
     foraging_allele: Literal["rover", "sitter"]
     foraging_locomotion_gain: float
     dopr1_learning_scale: float
@@ -53,9 +62,15 @@ class IndividualFlyGenome:
     initial_amino_level: float
 
     def is_valid(self) -> bool:
-        """Verify that all allelic parameters lie within viable physiological bounds."""
+        """Verify that X:A -> Sxl -> Tra -> Dsx/Fru cascade and allelic parameters are physiologically valid."""
+        expected_sxl = self.x_to_autosome_ratio >= 0.95
+        expected_dsx = "DsxF" if self.tra_active else "DsxM"
         return (
             self.sex in ("F", "M")
+            and self.x_to_autosome_ratio in (0.5, 1.0)
+            and self.sxl_active == expected_sxl
+            and self.tra_active == self.sxl_active
+            and self.dsx_isoform == expected_dsx
             and self.foraging_allele in ("rover", "sitter")
             and 0.65 <= self.foraging_locomotion_gain <= 1.40
             and 0.65 <= self.dopr1_learning_scale <= 1.40
@@ -105,10 +120,19 @@ class FlySpawner:
         self,
         sex: Literal["F", "M"] | None = None,
         foraging_allele: Literal["rover", "sitter"] | None = None,
+        *,
+        fru_m_override: bool | None = None,
     ) -> IndividualFlyGenome:
-        """Sample a valid individual genome with natural polygenic variation."""
+        """Sample a valid individual genome with X:A -> Sxl -> Tra -> Dsx/Fru cascade and natural polygenic variation."""
         self.spawn_counter += 1
         chosen_sex: Literal["F", "M"] = sex if sex in ("F", "M") else ("F" if self.rng.random() < 0.5 else "M")
+        # Drosophila sex determination is driven by X-chromosome dose / X:A ratio (1.0 -> Sxl ON, 0.5 -> Sxl OFF)
+        x_to_a = 1.0 if chosen_sex == "F" else 0.5
+        sxl_on = x_to_a >= 0.95
+        tra_on = sxl_on
+        dsx_iso: Literal["DsxF", "DsxM"] = "DsxF" if tra_on else "DsxM"
+        fru_m_on = fru_m_override if fru_m_override is not None else (not tra_on)
+
         chosen_for: Literal["rover", "sitter"] = (
             foraging_allele
             if foraging_allele in ("rover", "sitter")
@@ -120,6 +144,11 @@ class FlySpawner:
         genome = IndividualFlyGenome(
             fly_id=f"fly_{self.spawn_counter:03d}_{chosen_sex}_{chosen_for}",
             sex=chosen_sex,
+            x_to_autosome_ratio=x_to_a,
+            sxl_active=sxl_on,
+            tra_active=tra_on,
+            dsx_isoform=dsx_iso,
+            fru_m_active=fru_m_on,
             foraging_allele=chosen_for,
             foraging_locomotion_gain=round(loco_gain, 4),
             dopr1_learning_scale=round(self.rng.uniform(0.88, 1.18), 4),
@@ -139,13 +168,21 @@ class FlySpawner:
         foraging_allele: Literal["rover", "sitter"] | None = None,
         pos_xyz: tuple[float, float, float] | None = None,
         yaw_rad: float | None = None,
+        *,
+        fru_m_override: bool | None = None,
     ) -> SpawnedFly:
         """Spawn one complete 189,766-cell living fly from a valid genome."""
         from fly_nca.composition import FlyNCAComposition
 
-        ind_genome = self.sample_valid_genome(sex=sex, foraging_allele=foraging_allele)
+        ind_genome = self.sample_valid_genome(
+            sex=sex,
+            foraging_allele=foraging_allele,
+            fru_m_override=fru_m_override,
+        )
         full_conn = FullConnectomeFlyNCA(
             sex=ind_genome.sex,
+            dsx_isoform=ind_genome.dsx_isoform,
+            fru_m_active=ind_genome.fru_m_active,
             foraging_Write_gain=ind_genome.foraging_locomotion_gain,
             dopr1_learning_scale=ind_genome.dopr1_learning_scale,
             oaa2r_brake_scale=ind_genome.oaa2r_brake_scale,
@@ -301,10 +338,14 @@ class MultiFlySocialArena4D:
                 f_i.oviposition_active = False
                 f_i.receptivity_score = 0.0
 
-                if f_i.genome.sex == "M":
+                if f_i.genome.fru_m_active:
                     if conn_out.male_pip10_song_rate > 0.15 and neighbor_is_female:
                         f_i.wing_song_active = True
-                        f_i.current_behavior = "MALE_COURTSHIP_SONG"
+                        f_i.current_behavior = (
+                            "MALE_COURTSHIP_SONG"
+                            if f_i.genome.dsx_isoform == "DsxM"
+                            else "FEMALE_FRUM_COURTSHIP_SONG"
+                        )
                         telem.motor.wing_song_mode[0] = float(conn_out.male_tn1_wing_song_rate)
                     elif nearest_j is not None and not neighbor_is_female and nearest_dist < 0.015:
                         # Male-male encounter on food patch -> VPM4 OA+Glu boxing escalation
@@ -322,7 +363,7 @@ class MultiFlySocialArena4D:
                             "FORAGING_ROVER" if f_i.genome.foraging_allele == "rover" else "FORAGING_SITTER"
                         )
                 else:
-                    # Female (XX)
+                    # Wild-type Female (X:A=1.0 -> Sxl ON -> Tra ON -> DsxF, Fru-)
                     if conn_out.female_pc1_receptivity_rate > 0.15 and song_heard > 0.1:
                         f_i.receptivity_score = round(conn_out.female_pc1_receptivity_rate, 4)
                         f_i.current_behavior = "FEMALE_SONG_RECEPTIVITY"
@@ -340,6 +381,10 @@ class MultiFlySocialArena4D:
                     {
                         "fly_id": f_i.genome.fly_id,
                         "sex": f_i.genome.sex,
+                        "x_to_a": f_i.genome.x_to_autosome_ratio,
+                        "sxl_tra": f_i.genome.tra_active,
+                        "dsx": f_i.genome.dsx_isoform,
+                        "fru_m": f_i.genome.fru_m_active,
                         "foraging_allele": f_i.genome.foraging_allele,
                         "pos_xyz": [round(c, 5) for c in f_i.pos_xyz],
                         "behavior": f_i.current_behavior,

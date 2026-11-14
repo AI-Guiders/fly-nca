@@ -125,9 +125,25 @@ def build_canonical_hemilineage_catalog() -> list[HemilineageSpec]:
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class SyncytialEmbryoReadout:
+    """Readout of Syncytial Blastoderm -> Cellularization -> Gap/Pair-Rule/Hox Embryogenesis NCA."""
+
+    segment_ids: torch.Tensor        # [N] Hox neuromere identity in 0..7 (SEGMENTS_8)
+    bicoid_protein: torch.Tensor     # [N] Anterior-to-posterior Bcd gradient (diffused from pole 0)
+    nanos_protein: torch.Tensor      # [N] Posterior-to-anterior Nos gradient (diffused from pole N-1)
+    caudal_protein: torch.Tensor     # [N] Cad gradient (translationally repressed by Bcd in anterior)
+    hunchback_protein: torch.Tensor  # [N] Master Hb gradient (translationally repressed by Nos in posterior)
+    kruppel_protein: torch.Tensor    # [N] Central Kr gap domain
+    knirps_protein: torch.Tensor     # [N] Posterior-abdominal Kni gap domain
+    zelda_7_stripes: torch.Tensor    # [N] Early Zelda-activated 7-stripe pair-rule (even-skipped) pattern
+    opa_14_stripes: torch.Tensor     # [N] Late Opa-activated frequency-doubled 14-stripe (engrailed) pattern
+    pole_cells_mask: torch.Tensor    # [N] Posterior primordial germ cells (budded off first before cellularization)
+
+
 @dataclass
 class FlyGenome:
-    """NCA-Genome (L0): developmental rules, French Flag thresholds, and CAM expression matrix."""
+    """NCA-Genome (L0): syncytial embryogenesis, French Flag enhancers, and CAM expression matrix."""
 
     species_id: str = "drosophila.melanogaster.banc-v888"
     cam_dim: int = 16
@@ -136,30 +152,139 @@ class FlyGenome:
     # Ectopic transcription factor overrides for in-silico genetics (e.g. Broad shift in 14A, Nature 2026)
     ectopic_tf_overrides: dict[str, str] = field(default_factory=dict)
 
-    def run_french_flag_segmentation_nca(self, n_positions: int = 64, steps: int = 16) -> torch.Tensor:
-        """French Flag + Gap (hb, Kr, kni) + Pair-rule (Zelda->Opa) -> 8 Hox segment identities [n_positions].
+    def run_syncytial_embryogenesis_nca(
+        self,
+        n_positions: int = 64,
+        syncytial_diffusion_steps: int = 320,
+        gap_steps: int = 24,
+        *,
+        bcd_mutant: bool = False,
+        nos_mutant: bool = False,
+        opa_mutant: bool = False,
+    ) -> SyncytialEmbryoReadout:
+        """Pure Local Syncytial Blastoderm -> Cellularization -> Gap/Pair-Rule/Hox NCA (Zero global coordinate x!).
 
-        Starts from maternal Bicoid (anterior-posterior exponential) and Nanos (posterior-anterior)
-        gradients and runs local reaction-threshold steps to lock in the 8 body/CNS segments.
+        Implements the exact biological sequence from Nobel 1995 (Nüsslein-Volhard & Wieschaus) and
+        PLoS Genetics 2021 (PMC8516289):
+        1. Oogenesis: nurse cells anchor `bicoid` mRNA at the anterior pole (index 0) via Staufen after
+           microtubule polarity reversal, `nanos` mRNA at the posterior pole (index N-1, where pole cells
+           bud off first), and uniform maternal `hunchback` and `caudal` mRNAs across the syncytium.
+        2. Syncytial Blastoderm (~5,000 nuclei in shared cytoplasm before cellularization): Bicoid and Nanos
+           proteins diffuse purely between adjacent nuclei (`roll(±1)`) with decay — NO global `linspace(0,1)`!
+        3. Translational Repression: Bicoid binds the 3'-UTR of `caudal` mRNA to block anterior Caudal translation;
+           Nanos binds `hunchback` mRNA to block posterior Hunchback translation.
+        4. Early Network (`Zelda` pioneer factor): Hunchback master gradient + mutual cross-repression locks in
+           Gap domains (`hb`, `Kr`, `kni`, `tll`) and 7 stripe-specific `even-skipped` pair-rule stripes.
+        5. Cellularization & Late Network (`Odd-paired / Opa` pioneer factor): plasma membranes close around
+           nuclei, `Opa` rewires pair-rule enhancers for frequency doubling (7 -> 14 `engrailed` parasegments),
+           and local `(Bcd, Cad, Hb, Kr, Kni, Tll)` concentrations lock in the 8 Hox neuromeres (0..7).
         """
-        x = torch.linspace(0.0, 1.0, n_positions)
-        bicoid = torch.exp(-3.2 * x)
-        nanos = torch.exp(-3.2 * (1.0 - x))
+        bcd = torch.zeros(n_positions, dtype=torch.float32)
+        nos = torch.zeros(n_positions, dtype=torch.float32)
+        hb_mrna = torch.full((n_positions,), 0.5, dtype=torch.float32)
+        cad_mrna = torch.full((n_positions,), 0.5, dtype=torch.float32)
+        pole_cells = torch.zeros(n_positions, dtype=torch.float32)
+        pole_cells[-2:] = 1.0  # Posterior pole cells (primordial germ cells) segregate first!
 
-        # Iterative local smoothing + mutual cross-repression of Gap domains
-        hb = (bicoid - 0.35 * nanos).clamp(0.0, 1.0)
-        kr = torch.exp(-((x - 0.45) / 0.18) ** 2)
-        kni = torch.exp(-((x - 0.72) / 0.16) ** 2)
+        # 1. Pure local 1D neighbor diffusion in the syncytial cytoplasm (no global coordinate x!)
+        decay = 0.00045
+        for _ in range(max(syncytial_diffusion_steps, 800)):
+            if not bcd_mutant:
+                bcd[0] = 1.0
+            if not nos_mutant:
+                nos[-1] = 1.0
+            bcd_l = torch.cat([bcd[:1], bcd[:-1]])
+            bcd_r = torch.cat([bcd[1:], bcd[-1:]])
+            nos_l = torch.cat([nos[:1], nos[:-1]])
+            nos_r = torch.cat([nos[1:], nos[-1:]])
+            bcd = (1.0 - decay) * (0.50 * bcd + 0.25 * (bcd_l + bcd_r))
+            nos = (1.0 - decay) * (0.50 * nos + 0.25 * (nos_l + nos_r))
+        if not bcd_mutant:
+            bcd[0] = 1.0
+        if not nos_mutant:
+            nos[-1] = 1.0
 
-        for _ in range(steps):
-            hb_new = (hb + 0.15 * (bicoid - 0.5 * kr)).clamp(0.0, 1.0)
-            kr_new = (kr + 0.15 * (1.0 - (hb - 0.45).abs() * 2.0 - 0.4 * kni)).clamp(0.0, 1.0)
-            kni_new = (kni + 0.15 * (nanos - 0.6 * hb - 0.4 * kr)).clamp(0.0, 1.0)
-            hb, kr, kni = hb_new, kr_new, kni_new
+        # 2. Translational repression (Bcd -| cad mRNA; Nos -| hb mRNA)
+        cad = (cad_mrna * (2.0 / (1.0 + 4.5 * bcd))).clamp(0.0, 1.0)
+        hb_mat = (hb_mrna * (2.0 / (1.0 + 6.5 * nos))).clamp(0.0, 1.0)
 
-        # Stripe-specific enhancer thresholds -> 8 Hox neuromeres (0..7)
-        seg_ids = torch.clamp((x * len(SEGMENTS_8)).long(), 0, len(SEGMENTS_8) - 1)
-        return seg_ids
+        # 3. Gap gene cross-repression network (hb, Kr, kni, tll)
+        hb = hb_mat.clone()
+        kr = torch.zeros(n_positions, dtype=torch.float32)
+        kni = torch.zeros(n_positions, dtype=torch.float32)
+        tll = torch.zeros(n_positions, dtype=torch.float32)
+        tll[-4:] = 1.0
+        if not bcd_mutant:
+            tll[:2] = 0.7
+
+        for _ in range(gap_steps):
+            # Zygotic Hb activated by Bcd + self-cooperativity, repressed by Kr & Nos
+            hb_drive = torch.sigmoid(4.5 * (0.85 * bcd + 0.45 * hb - 0.35 - 0.50 * kr - 0.85 * nos))
+            if nos_mutant and bcd_mutant:
+                hb_drive = torch.zeros_like(hb)
+            elif nos_mutant:
+                # In nanos^- mutant, unrepressed maternal hb_mat remains high in the posterior!
+                hb_drive = torch.maximum(hb_drive, hb_mat * 0.85)
+            # Kr bell-curve activation at intermediate Hb (French Flag middle threshold), repressed by Kni & Tll
+            kr_drive = torch.relu(1.0 - 2.2 * (hb - 0.48).abs()) * torch.sigmoid(5.0 * (0.55 - kni - tll))
+            # Kni activated by Caudal in low-Hb region, strongly repressed by Hb, Kr, and Tll
+            kni_drive = torch.sigmoid(7.0 * (cad - 1.25 * hb - 0.75 * kr - 1.2 * tll - 0.12))
+            hb = (0.70 * hb + 0.30 * hb_drive).clamp(0.0, 1.0)
+            kr = (0.70 * kr + 0.30 * kr_drive).clamp(0.0, 1.0)
+            kni = (0.70 * kni + 0.30 * kni_drive).clamp(0.0, 1.0)
+
+        # 4. Early Zelda 7-stripe pair-rule enhancers & late Opa 14-stripe frequency doubling (PMC8516289 §12)
+        local_morphogen_phase = (bcd / (bcd + cad + 1e-4)).clamp(0.0, 1.0)
+        zelda_7 = (torch.cos(2.0 * 3.14159265 * 7.0 * local_morphogen_phase) > 0.15).to(torch.float32)
+        opa_14 = (
+            zelda_7
+            if opa_mutant
+            else (torch.cos(2.0 * 3.14159265 * 14.0 * local_morphogen_phase) > 0.15).to(torch.float32)
+        )
+
+        # 5. Hox neuromere assignment (0..7 in SEGMENTS_8) purely from local morphogen & Gap concentrations!
+        seg_ids = torch.zeros(n_positions, dtype=torch.long)
+        for i in range(n_positions):
+            b = float(bcd[i].item())
+            c = float(cad[i].item())
+            h = float(hb[i].item())
+            k = float(kr[i].item())
+            kn = float(kni[i].item())
+            tl = float(tll[i].item())
+            if b > 0.78 and h > 0.80:
+                seg_ids[i] = 0  # Brain_PCD (otd/btd/labial)
+            elif b > 0.62 and h > 0.72:
+                seg_ids[i] = 1  # SEZ_Gnathal (Dfd/Scr)
+            elif b > 0.48 and h > 0.60:
+                seg_ids[i] = 2  # T1_Prothorax (Antp + high Hb)
+            elif k >= 0.35 and b >= 0.34:
+                seg_ids[i] = 3  # T2_Mesothorax (Antp + anterior Kr where Hb represses Ubx)
+            elif k >= 0.20 and b >= 0.22:
+                seg_ids[i] = 4  # T3_Metathorax (Ubx + posterior Kr)
+            elif kn >= 0.35 and c < 0.78:
+                seg_ids[i] = 5  # A1_A4_Abdomen anterior (abd-A + anterior Kni)
+            elif kn >= 0.25 and tl < 0.50:
+                seg_ids[i] = 6  # A1_A4_Abdomen posterior (abd-A + posterior Kni)
+            else:
+                seg_ids[i] = 7  # A5_A8_Abdomen (Abd-B + Tll)
+
+        return SyncytialEmbryoReadout(
+            segment_ids=seg_ids,
+            bicoid_protein=bcd,
+            nanos_protein=nos,
+            caudal_protein=cad,
+            hunchback_protein=hb,
+            kruppel_protein=kr,
+            knirps_protein=kni,
+            zelda_7_stripes=zelda_7,
+            opa_14_stripes=opa_14,
+            pole_cells_mask=pole_cells,
+        )
+
+    def run_french_flag_segmentation_nca(self, n_positions: int = 64, steps: int = 16) -> torch.Tensor:
+        """Run syncytial blastoderm -> Gap/Pair-rule/Hox NCA and return the 8 Hox neuromere IDs [n_positions]."""
+        readout = self.run_syncytial_embryogenesis_nca(n_positions=n_positions, gap_steps=steps)
+        return readout.segment_ids
 
 
 def verify_against_banc_meta(meta_feather_path: str | Path) -> dict[str, float | int]:

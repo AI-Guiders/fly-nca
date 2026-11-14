@@ -11,6 +11,7 @@ from fly_nca.genome.fly_genome import (
     SHTF_17_NAMES,
     FlyGenome,
     HemilineageSpec,
+    SyncytialEmbryoReadout,
     build_canonical_hemilineage_catalog,
     verify_against_banc_meta,
 )
