@@ -54,6 +54,7 @@ def motor_out_to_neuromechfly_ctrl(
     dof_idx = {j.name: i for i, j in enumerate(act_dofs)}
 
     # 1. 6 Legs mapping: Fly-NCA order ("L1", "R1", "L2", "R2", "L3", "R3") -> FlyGym ("lf", "rf", "lm", "rm", "lh", "rh")
+    # Note: In NeuroMechFly's anatomical frame, negative trochanterfemur-pitch (-139 deg neutral) lifts the femur during swing!
     leg_map = ("lf", "rf", "lm", "rm", "lh", "rh")
     lj = motor.leg_joint_drive.detach().cpu().numpy()
     for leg_i, fg_leg in enumerate(leg_map):
@@ -62,12 +63,20 @@ def motor_out_to_neuromechfly_ctrl(
         tibia_ext = float(lj[leg_i, 2])
         tarsus_flx = float(lj[leg_i, 3])
 
-        if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
-            ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += 0.35 * coxa_fwd
-        if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
-            ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += 0.45 * troch_lift
-        if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
-            ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.40 * tibia_ext
+        if fg_leg in ("lf", "rf"):
+            if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
+                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] -= 0.40 * coxa_fwd
+            if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
+                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] -= 0.50 * troch_lift
+            if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
+                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] -= 0.45 * coxa_fwd
+        else:
+            if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
+                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += 0.35 * coxa_fwd
+            if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
+                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] -= 0.50 * troch_lift
+            if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
+                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.45 * (coxa_fwd + 0.3 * tibia_ext)
         if f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch" in dof_idx:
             ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= 0.25 * tarsus_flx
 
@@ -127,10 +136,10 @@ def run_mujoco_colony_and_export_viewer(
     """Run the 189,766-cell Fly-NCA colony coupled to MuJoCo / FlyGym (`NeuroMechFly`) and export HTML viewer."""
     spawner = FlySpawner(seed=seed, device=device)
     flies: list[SpawnedFly] = [
-        spawner.spawn_fly(sex="F", foraging_allele="rover", pos_xyz=(0.0016, 0.0005, 0.0), yaw_rad=-2.8),
-        spawner.spawn_fly(sex="M", foraging_allele="sitter", pos_xyz=(-0.0012, -0.0004, 0.0), yaw_rad=0.35),
-        spawner.spawn_fly(sex="F", foraging_allele="sitter", pos_xyz=(0.0003, -0.0018, 0.0), yaw_rad=1.8),
-        spawner.spawn_fly(sex="M", foraging_allele="rover", pos_xyz=(-0.0018, 0.0016, 0.0), yaw_rad=-0.7),
+        spawner.spawn_fly(sex="F", foraging_allele="rover", pos_xyz=(0.0022, 0.0006, 0.0), yaw_rad=-2.8),
+        spawner.spawn_fly(sex="M", foraging_allele="sitter", pos_xyz=(-0.0022, -0.0005, 0.0), yaw_rad=0.25),
+        spawner.spawn_fly(sex="F", foraging_allele="sitter", pos_xyz=(0.0004, -0.0024, 0.0), yaw_rad=1.8),
+        spawner.spawn_fly(sex="M", foraging_allele="rover", pos_xyz=(-0.0022, 0.0020, 0.0), yaw_rad=-0.7),
     ][: max(2, int(n_founders))]
 
     colony = MultiFlySocialArena3D(flies=flies, spawner=spawner)
@@ -180,6 +189,13 @@ def run_mujoco_colony_and_export_viewer(
     nmf_map: dict[str, NeuroMechFly] = {}
     cam = None
 
+    # Fixed world overview camera so the user sees the flies walking across the ground and yeast patch!
+    world_cam = world.mjcf_root.worldbody.add_camera(
+        name="arena_overview_cam",
+        pos=(-5.5, -5.5, 4.8),
+        xyaxes=(0.707, -0.707, 0.0, 0.38, 0.38, 0.84),
+    )
+
     for idx, f in enumerate(flies):
         nmf = NeuroMechFly(name=f.genome.fly_id)
         nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL)
@@ -187,12 +203,6 @@ def run_mujoco_colony_and_export_viewer(
         nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL, kp=50.0)
         nmf.add_leg_adhesion()
         nmf.colorize()
-        if idx == 0:
-            cam = nmf.add_tracking_camera(
-                name="colony_cam",
-                pos_offset=(-5.2, -5.2, 4.6),
-                rotation=Rotation3D("xyaxes", (0.7, -0.7, 0.0, 0.38, 0.38, 0.84)),
-            )
         px_mm = f.pos_xyz[0] * 1000.0
         py_mm = f.pos_xyz[1] * 1000.0
         yaw = float(f.arena.thorax_rpy[2].item())
@@ -203,9 +213,8 @@ def run_mujoco_colony_and_export_viewer(
     sim = Simulation(world)
     sim.reset()
     sim.warmup(0.012)
-    assert cam is not None
     mj_renderer = mj.Renderer(sim.mj_model, height=camera_res[0], width=camera_res[1])
-    cam_id = mj.mj_name2id(sim.mj_model, mj.mjtObj.mjOBJ_CAMERA, cam.name)
+    cam_id = mj.mj_name2id(sim.mj_model, mj.mjtObj.mjOBJ_CAMERA, world_cam.name)
 
     history_frames: list[list[dict[str, Any]]] = []
     frame_png_b64: list[str] = []
@@ -214,25 +223,30 @@ def run_mujoco_colony_and_export_viewer(
         snaps = colony.step_population(frames=1, enable_ontogeny_and_reproduction=True)
         history_frames.append(snaps)
 
-        # Feed decoded 1,026-effector MotorOut from each founder fly into MuJoCo NeuroMechFly actuators!
-        for f in flies:
-            nmf = nmf_map.get(f.genome.fly_id)
-            if nmf is None:
-                continue
-            motor = f.full_connectome.decode_motor_effectors()
-            ctrl, adh = motor_out_to_neuromechfly_ctrl(
-                nmf,
-                motor,
-                wing_song_active=f.wing_song_active,
-                oviposition_active=f.oviposition_active,
-                step_idx=step_i,
-            )
-            sim.set_actuator_inputs(f.genome.fly_id, ActuatorType.POSITION, ctrl)
-            sim.set_leg_adhesion_states(f.genome.fly_id, adh)
-
-        # Advance MuJoCo physics for 1 cognitive wingbeat frame (~4 ms = 40 x 0.1 ms MuJoCo steps)
-        for _ in range(25):
+        # Advance MuJoCo physics across a full tripod stride cycle (120 x 0.1 ms = 12 ms per rendered frame)
+        for sub_k in range(120):
+            for f in flies:
+                nmf = nmf_map.get(f.genome.fly_id)
+                if nmf is None:
+                    continue
+                f.full_connectome.step_counter += 1
+                motor = f.full_connectome.decode_motor_effectors()
+                ctrl, adh = motor_out_to_neuromechfly_ctrl(
+                    nmf,
+                    motor,
+                    wing_song_active=f.wing_song_active,
+                    oviposition_active=f.oviposition_active,
+                    step_idx=step_i * 120 + sub_k,
+                )
+                sim.set_actuator_inputs(f.genome.fly_id, ActuatorType.POSITION, ctrl)
+                sim.set_leg_adhesion_states(f.genome.fly_id, adh)
             sim.step()
+            # Sync 3D thorax position from MuJoCo back into Fly-NCA arena!
+            for f in flies:
+                if f.genome.fly_id in nmf_map:
+                    thorax_mm = sim.get_body_positions(f.genome.fly_id)[0]
+                    f.arena.pos_xyz[0] = float(thorax_mm[0]) * 1e-3
+                    f.arena.pos_xyz[1] = float(thorax_mm[1]) * 1e-3
 
         # Render true MuJoCo 3D frame
         mj_renderer.update_scene(sim.mj_data, camera=cam_id)
