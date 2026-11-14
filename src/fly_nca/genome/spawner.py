@@ -307,8 +307,8 @@ class MultiFlySocialArena4D:
                         if nearest_j.wing_song_active:
                             song_heard = 0.90 * prox  # 160 Hz sine / 35 ms IPI pulse courtship song
                     else:
-                        mate_conc = 0.85 * prox  # Female cuticular hydrocarbon pheromone (7,11-HD -> VA1v)
-                        cva_conc = 0.25 * prox
+                        mate_conc = 0.85 * prox  # Female cuticular hydrocarbon pheromone (7,11-HD -> VA1v & ppk23 F-cells)
+                        cva_conc = 0.0  # Virgin females lack male anti-aphrodisiac cVA
                 else:
                     f_i.arena.small_target_pos_xyz = None
 

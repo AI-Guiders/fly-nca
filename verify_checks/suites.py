@@ -136,7 +136,7 @@ def check_pan_connectome_189766_and_spawner(device: str = "cpu") -> dict[str, An
     male = spawner.spawn_fly(sex="M", pos_xyz=(-0.002, 0.0, 0.0), yaw_rad=0.0)
     sub = female.full_connectome.substrate
     social = MultiFlySocialArena4D(flies=[female, male])
-    snaps = social.step_population(frames=3)
+    snaps = social.step_population(frames=4)
     ok = (
         sub.n_total == 189766
         and sub.n_edges > 6_700_000

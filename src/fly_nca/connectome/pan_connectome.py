@@ -76,6 +76,34 @@ class PanConnectomeSubstrate:
 
         self.tau_v_ms: torch.Tensor = raw["tau_v_ms"].to(self.device, dtype=torch.float32)
         self.alpha_shunt: torch.Tensor = raw["alpha_shunt"].to(self.device, dtype=torch.float32)
+        n = self.n_total
+        self.dcv_peptidergic_gain: torch.Tensor = raw.get(
+            "dcv_peptidergic_gain", torch.full((n,), 0.25)
+        ).to(self.device, dtype=torch.float32)
+        self.mito_atp_capacity: torch.Tensor = raw.get(
+            "mito_atp_capacity", torch.ones(n)
+        ).to(self.device, dtype=torch.float32)
+        self.fca_ca_alpha1t: torch.Tensor = raw.get(
+            "fca_ca_alpha1t", torch.full((n,), 0.45)
+        ).to(self.device, dtype=torch.float32)
+        self.fca_glucl_rdl: torch.Tensor = raw.get(
+            "fca_glucl_rdl", torch.ones(n)
+        ).to(self.device, dtype=torch.float32)
+        self.fca_shaker_k: torch.Tensor = raw.get(
+            "fca_shaker_k", torch.ones(n)
+        ).to(self.device, dtype=torch.float32)
+        self.fca_shakb_gap: torch.Tensor = raw.get(
+            "fca_shakb_gap", torch.full((n,), 0.35)
+        ).to(self.device, dtype=torch.float32)
+        self.effector_influence: torch.Tensor = raw.get(
+            "effector_influence", torch.zeros(n)
+        ).to(self.device, dtype=torch.float32)
+        self.betweenness_aff_eff: torch.Tensor = raw.get(
+            "betweenness_aff_eff", torch.zeros(n)
+        ).to(self.device, dtype=torch.float32)
+        self.cotrans_no_mask: torch.Tensor = raw.get(
+            "cotrans_no_mask", torch.zeros(n, dtype=torch.uint8)
+        ).to(self.device)
         self.nt_id: torch.Tensor = raw["nt_id"].to(self.device)
         self.sex_code: torch.Tensor = raw["sex_code"].to(self.device)
         self.side_id: torch.Tensor = raw["side_id"].to(self.device)
@@ -167,10 +195,13 @@ class FullConnectomeFlyNCA(nn.Module):
         #   and enables male VNC song circuits (TN1/vPR6) and pIP10 descending song drive
         sex_mask = torch.ones(n, device=self.device, dtype=torch.float32)
         if self.dsx_isoform == "DsxF":
-            sex_mask[self.substrate.sex_code == 3] = 0.0  # Male-specific P1 dies under DsxF
+            sex_mask[self.substrate.sex_code == 3] = 0.0  # Male-specific Dsx+ P1 dies under DsxF
             if self.fru_m_active:
-                # Demir & Dickson (2005) / Clyne & Miesenböck (2008) (PMC10622783):
-                # In DsxF + FruM+ females, P1 is absent, but FruM+ VNC song circuits (TN1/pIP10) are active!
+                # Demir & Dickson (2005) / Kimura et al. (2008) / PMC10622783:
+                # In DsxF + FruM+ females, Dsx-dependent P1 (100% dsx+) undergoes apoptosis,
+                # whereas the 749 FruM-only (fru_high/fru_low, dsx-) circuits and VNC song circuits survive!
+                if "dimorphic_male_fru_only" in cg:
+                    sex_mask[cg["dimorphic_male_fru_only"]] = 1.0
                 sex_mask[cg["dimorphic_male_tn1_song"]] = 1.0
                 sex_mask[cg["dimorphic_male_pip10"]] = 1.0
         else:
@@ -215,9 +246,11 @@ class FullConnectomeFlyNCA(nn.Module):
         i_sens = torch.zeros(n, device=self.device, dtype=torch.float32)
 
         # 1. Visual periphery (retina + lamina + ocelli: 7,686 cells)
-        vis_mean = float(sensor.ommatidia_light.mean().item())
-        i_sens[cg["sens_visual_left"]] = 0.35 * vis_mean + 0.45 * float(sensor.looming_rate)
-        i_sens[cg["sens_visual_right"]] = 0.35 * vis_mean + 0.45 * float(sensor.looming_rate)
+        # Lamina monopolar cells (L1/L2 + Dm9/Lawf surround) high-pass filter steady illumination into spatial contrast
+        vis_contrast = float(sensor.ommatidia_light.std().item()) if sensor.ommatidia_light.numel() > 1 else 0.0
+        vis_drive = 0.04 + 0.65 * vis_contrast + 0.45 * float(sensor.looming_rate)
+        i_sens[cg["sens_visual_left"]] = vis_drive
+        i_sens[cg["sens_visual_right"]] = vis_drive
         i_sens[cg["sens_ocellar"]] = abs(float(sensor.head_horizon_rpy[0].item())) + abs(float(sensor.head_horizon_rpy[1].item()))
 
         # Looming shadow on retina excites peripheral lobula LC4/LPLC2 visual feature detectors
@@ -257,29 +290,39 @@ class FullConnectomeFlyNCA(nn.Module):
         i_sens[cg["sens_jo_left"]] = min(1.0, wind_mag + song_vib * 1.2 * self.courtship_vigor_scale)
         i_sens[cg["sens_jo_right"]] = min(1.0, wind_mag + song_vib * 1.2 * self.courtship_vigor_scale)
 
-        # 4. Gustatory periphery (1,585 sensory cells across labellum, legs, pharynx)
+        # 4. Gustatory & Tarsal Pheromone periphery (1,585 sensory cells across labellum, legs, pharynx)
+        # Thistle et al. (2012) Cell / Kallman, Kim & Scott (2015) Nat Neurosci:
+        # Foreleg ppk23+ tarsal gustatory neurons split into F-cells (LgLG1a..4 -> AN05B102 -> P1, sensing female 7,11-HD)
+        # and M-cells (LgLG5,6,8 -> AN09B017 -> mAL -| P1, sensing male cVA / 7-tricosene anti-aphrodisiac).
         sweet = float(sensor.taste_sweet_bitter_amino[0].item())
         bitter = float(sensor.taste_sweet_bitter_amino[1].item())
         amino = float(sensor.taste_sweet_bitter_amino[2].item()) + (0.6 if substrate_yeast_rich else 0.0)
         i_sens[cg["sens_gust_labellum"]] = min(1.0, sweet * hunger_boost + amino)
-        i_sens[cg["sens_gust_front_leg"]] = min(1.0, sweet + bitter + amino)
+
+        f_cells = cg.get("sens_gust_front_leg_female_711hd", cg["sens_gust_front_leg"])
+        m_cells = cg.get("sens_gust_front_leg_male_cva")
+        female_711hd_contact = float(mate_odor_conc) * self.courtship_vigor_scale if conspecific_is_female else 0.0
+        male_7t_contact = float(cva_pheromone_conc) * self.courtship_vigor_scale if (not conspecific_is_female or cva_pheromone_conc > 0.45) else 0.0
+        i_sens[f_cells] = min(1.0, sweet + amino + female_711hd_contact)
+        if m_cells is not None:
+            i_sens[m_cells] = min(1.0, bitter + male_7t_contact)
+
         i_sens[cg["sens_gust_hind_leg"]] = min(1.0, amino)
         i_sens[cg["sens_gust_pharynx"]] = min(1.0, sweet + amino)
         i_sens[cg["sens_nociception"]] = bitter
 
-        # 5. Legs & Haltere Proprioception / Mechanoreception (9,135 sensory cells)
+        # 5. Legs & Haltere Proprioception / Mechanoreception (excluding gustatory cells)
         leg_tags = ("L1", "R1", "L2", "R2", "L3", "R3")
         for leg_i, l_tag in enumerate(leg_tags):
             load_i = float(sensor.leg_ground_load[leg_i].item())
             touch_i = float(sensor.bristle_touch[leg_i].item())
-            i_sens[cg[f"sens_leg_{l_tag}"]] = min(1.0, 0.6 * load_i + 0.8 * touch_i)
+            i_sens[cg[f"sens_leg_{l_tag}"]] = min(1.0, 0.35 * load_i + 0.8 * touch_i)
 
         halt_mag = float(sensor.haltere_coriolis_rpy.abs().mean().item())
-        i_sens[cg["sens_haltere_left"]] = min(1.0, 0.3 + halt_mag)
-        i_sens[cg["sens_haltere_right"]] = min(1.0, 0.3 + halt_mag)
+        i_sens[cg["sens_haltere_left"]] = min(1.0, 0.25 + halt_mag)
+        i_sens[cg["sens_haltere_right"]] = min(1.0, 0.25 + halt_mag)
         i_sens[cg["sens_crop_visceral"]] = float(sensor.crop_stretch)
 
-        _ = conspecific_is_female
         return i_sens * self.sex_cell_mask
 
     def step_full_connectome(
@@ -298,7 +341,7 @@ class FullConnectomeFlyNCA(nn.Module):
         """Advance all 189,766 cells by `n_synaptic_hops` through the 5-port sparse CSR connectome matrices.
 
         Zero central-neuron shortcuts: sensory periphery inputs (`i_sens`) enter ONLY at the 16,563 sensory
-        neurons (`sens_*` + peripheral optic glomeruli `LC4/LC10a`) and propagate across the 6,749,514
+        neurons (`sens_*` + peripheral optic glomeruli `LC4/LC10a`) and propagate across the 6,853,423
         empirical synaptic edges (`AL_PN -> KC/MBON/LHON -> CX/P1/pC1 -> DNs -> Motor Neurons`).
         """
         sub = self.substrate
@@ -317,22 +360,25 @@ class FullConnectomeFlyNCA(nn.Module):
         theta = 0.05
 
         for _ in range(max(1, int(n_synaptic_hops))):
-            # Port 3: Axo-axonic presynaptic modulation across all 189,766 axons
+            # Port 3: Signed axo-axonic presynaptic modulation across all 189,766 axons (+ACh facilitation, -GABA/Glu presynaptic inhibition)
             a_col = (self.a * self.sex_cell_mask).unsqueeze(1)
             aa_mod = torch.matmul(sub.w_port3_aa, a_col).squeeze(1)
-            a_presyn = (self.a * self.sex_cell_mask * (1.0 + 0.35 * aa_mod)).clamp(0.0, 1.0).unsqueeze(1)
+            a_presyn = (self.a * self.sex_cell_mask * (1.0 + 0.45 * aa_mod).clamp(0.05, 1.50)).clamp(0.0, 1.0).unsqueeze(1)
+            a_mod_presyn = (a_presyn.squeeze(1) * sub.dcv_peptidergic_gain).unsqueeze(1)
 
-            # Port 1 (ACh+ dendritic excitation) & Port 2 (GABA/Glu/His dendritic & root chloride shunting)
+            # Port 1 (ACh+ dendritic excitation), Port 2 (GABA/Glu/His chloride shunting & hyperpolarization), Port 5 (DCV peptidergic/aminergic)
             i_exc = torch.matmul(sub.w_port1_ach, a_presyn).squeeze(1) + i_sens
             g_shunt = torch.matmul(sub.w_port2_shunt, a_presyn).squeeze(1)
             g_root = torch.matmul(sub.w_port2_root, a_presyn).squeeze(1)
-            i_mod = torch.matmul(sub.w_port5_mod, a_presyn).squeeze(1)
+            i_mod = torch.matmul(sub.w_port5_mod, a_mod_presyn).squeeze(1)
 
-            # 5-Port dendritic integration across all 189,766 cells
-            i_dend = torch.tanh(2.6 * i_exc / (1.0 + 0.25 * sub.alpha_shunt * g_shunt)) / (1.0 + 2.0 * g_root)
+            # 5-Port dendritic integration with hyperpolarizing chloride reversal (-0.50*g_shunt) & divisive conductance shunt
+            net_syn = i_exc - 0.50 * sub.fca_glucl_rdl * g_shunt
+            i_dend = torch.tanh(2.6 * net_syn / (1.0 + 0.30 * sub.alpha_shunt * g_shunt)) / (1.0 + 2.2 * g_root)
 
-            # Membrane potential Leaky Integrator with individual empirical cable-length tau_V[189,766]
-            drive = i_dend + 0.25 * i_mod - 0.15 * self.adapt
+            # Post-inhibitory Ca-alpha1T rebound + Shaker K+ adaptation
+            rebound = 0.08 * sub.fca_ca_alpha1t * torch.relu(-self.v)
+            drive = (i_dend + 0.25 * i_mod + rebound - 0.15 * sub.fca_shaker_k * self.adapt) * sub.mito_atp_capacity.clamp(0.7, 1.4)
             self.v = ((1.0 - alpha_v) * self.v + alpha_v * drive).clamp(-1.0, 1.0) * self.sex_cell_mask
 
             # Soma firing rate a_i(t + dt) and spike-frequency adaptation
