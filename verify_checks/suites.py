@@ -128,7 +128,7 @@ def check_instrument_panel_completeness(device: str = "cpu") -> dict[str, Any]:
 
 
 def check_pan_connectome_189766_and_spawner(device: str = "cpu") -> dict[str, Any]:
-    """Verify the Full 189,766-Cell Pan-Connectome (BANC v888 + MCNS v1.0) and XX/XY Genetic Spawner."""
+    """Verify the Full 189,766-Cell Pan-Connectome (BANC v888 + MCNS v1.0) and X:A -> Sxl -> Tra -> Dsx/Fru Spawner."""
     from fly_nca.genome.spawner import FlySpawner, MultiFlySocialArena4D
 
     spawner = FlySpawner(seed=108, device=device)

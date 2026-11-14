@@ -256,7 +256,8 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
     # --- Per-Cell Biophysical, Transcriptomic & Genetic Vectors [189,766] ---
     # 1. Cable length -> tau_v_ms = 1.711 * (L2 / 241.53)
     l2_banc = b_meta["l2_cable_length_um"].fillna(450.0).to_numpy(dtype=np.float32)
-    l2_male = np.full(n_male_spec, 650.0, dtype=np.float32)
+    l2_male = np.full(n_male_spec, 520.0, dtype=np.float32)
+    l2_male[ms_df["superclass"].fillna("").isin(["descending_neuron", "ascending_neuron"]).to_numpy()] = 241.53
     l2_all = np.concatenate([l2_banc, l2_male])
     tau_v_ms = np.clip(1.711 * (l2_all / 241.53), 1.0, 25.0).astype(np.float32)
 
@@ -336,6 +337,16 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
         if nid is None:
             nid = hl_modal_nt.get(str(hl_banc.iat[i]), 8)
         nt_id[i] = nid
+
+    sc = b_meta["super_class"].fillna("").astype(str)
+    cc = b_meta["cell_class"].fillna("").astype(str)
+    cn = b_meta["cns_network"].fillna("").astype(str)
+    cf = b_meta["cell_function"].fillna("").astype(str)
+    is_sens_banc = sc.isin(["sensory", "sensory_ascending", "sensory_descending"]).to_numpy()
+    is_photo_banc = cf.str.startswith("visual").to_numpy()
+    # Peripheral sensory neurons (ORN, GRN, JON, campaniform, chordotonal, bristle) in Drosophila are cholinergic (ACh=0),
+    # whereas R1-R6 photoreceptors are histaminergic (His=6).
+    nt_id[:n_banc][is_sens_banc & (~is_photo_banc)] = 0
 
     m_09_nt = ms_df.get("neurotransmitter_predicted", pd.Series([None] * n_male_spec))
     for k in range(n_male_spec):
@@ -461,10 +472,21 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
     def _m_idx(mask: pd.Series | np.ndarray) -> torch.Tensor:
         return torch.from_numpy((n_banc + np.flatnonzero(np.asarray(mask))).astype(np.int32))
 
+    is_sens = sc.isin(["sensory", "sensory_ascending", "sensory_descending"])
+    mc_clean = b_meta["malecns_cell_type"].fillna("").astype(str).str.removeprefix("auto:")
+    is_leg_gust = (cf == "gustatory") | ct.str.startswith("LgLG") | mc_clean.str.startswith("LgLG")
+    # Kallman, Kim & Scott (2015) Nat Neurosci / MCNS v1.0 connectivity:
+    # - LgLG5,6,7,8 -> AN09B017 (vAB3, ACh -> P1) and LgLG1a,2 -> AN05B102 (PPN1, ACh -> P1) are female 7,11-HD F-cells
+    # - LgLG3,4 -> AN05B023 / AN13B002 (GABA -| P1) are male 7-tricosene/cVA M-cells
+    f_711hd_mask = ct.isin(["LgLG5", "LgLG6", "LgLG7", "LgLG8", "LgLG1a", "LgLG2"]) | mc_clean.isin(
+        ["LgLG5", "LgLG6", "LgLG7", "LgLG8", "LgLG1a", "LgLG2"]
+    )
+    m_cva_mask = (ct.isin(["LgLG3", "LgLG4"]) | mc_clean.isin(["LgLG3", "LgLG4"])) & (~f_711hd_mask)
+
     cell_groups: dict[str, torch.Tensor] = {
-        # Sensory Periphery (16,563 cells)
-        "sens_visual_left": _idx(cf.str.startswith("visual") & (b_side == "left")),
-        "sens_visual_right": _idx(cf.str.startswith("visual") & (b_side == "right")),
+        # Sensory Periphery (strictly afferent sensory / sensory_ascending / sensory_descending cells)
+        "sens_visual_left": _idx(is_sens & cf.str.startswith("visual") & (b_side == "left")),
+        "sens_visual_right": _idx(is_sens & cf.str.startswith("visual") & (b_side == "right")),
         "sens_ocellar": _idx(cf == "visual_ocellar"),
         "sens_orn_all": _idx(cc == "olfactory_receptor_neuron"),
         "sens_orn_left": _idx((cc == "olfactory_receptor_neuron") & (b_side == "left")),
@@ -473,31 +495,31 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
         "sens_orn_VA1v_mate": _idx(ct == "ORN_VA1v"),
         "sens_orn_DM1_food": _idx(ct.isin(["ORN_DM1", "ORN_DM4", "ORN_DM2"])),
         "sens_orn_V_co2": _idx(ct.isin(["ORN_V", "ORN_DA2", "ORN_DL4"])),
-        "sens_jo_left": _idx((cf == "auditory") & (b_side == "left")),
-        "sens_jo_right": _idx((cf == "auditory") & (b_side == "right")),
-        "sens_gust_labellum": _idx((cf == "gustatory") & (bps == "labellum")),
-        "sens_gust_front_leg": _idx((cf == "gustatory") & (bps == "front_leg")),
-        "sens_gust_front_leg_female_711hd": _idx((cf == "gustatory") & (bps == "front_leg") & (~ct.isin(["LgLG5", "LgLG6", "LgLG8"]))),
-        "sens_gust_front_leg_male_cva": _idx((cf == "gustatory") & (bps == "front_leg") & ct.isin(["LgLG5", "LgLG6", "LgLG8"])),
-        "sens_gust_middle_leg": _idx((cf == "gustatory") & (bps == "middle_leg")),
-        "sens_gust_hind_leg": _idx((cf == "gustatory") & (bps == "hind_leg")),
-        "sens_gust_pharynx": _idx((cf == "gustatory") & bps.isin(["pharynx", "anterior_digestive_tract"])),
-        "sens_campaniform_all": _idx(cc == "campaniform_sensillum_neuron"),
-        "sens_chordotonal_all": _idx(cc == "chordotonal_organ_neuron"),
-        "sens_bristle_all": _idx(cc == "bristle_neuron"),
-        "sens_haltere_left": _idx((bps == "haltere") & (b_side == "left")),
-        "sens_haltere_right": _idx((bps == "haltere") & (b_side == "right")),
-        "sens_crop_visceral": _idx(cf == "visceral_mechanosensation"),
-        "sens_thermo": _idx(cf == "thermosensory"),
-        "sens_hygro": _idx(cf == "hygrosensory"),
-        "sens_nociception": _idx(cf == "nociception"),
-        # Per-leg mechanoreceptors (L1..R3, excluding gustatory/pheromone chemoreceptors)
-        "sens_leg_L1": _idx((bps == "front_leg") & (cf != "gustatory") & (b_side == "left")),
-        "sens_leg_R1": _idx((bps == "front_leg") & (cf != "gustatory") & (b_side == "right")),
-        "sens_leg_L2": _idx((bps == "middle_leg") & (cf != "gustatory") & (b_side == "left")),
-        "sens_leg_R2": _idx((bps == "middle_leg") & (cf != "gustatory") & (b_side == "right")),
-        "sens_leg_L3": _idx((bps == "hind_leg") & (cf != "gustatory") & (b_side == "left")),
-        "sens_leg_R3": _idx((bps == "hind_leg") & (cf != "gustatory") & (b_side == "right")),
+        "sens_jo_left": _idx(is_sens & (cf == "auditory") & (b_side == "left")),
+        "sens_jo_right": _idx(is_sens & (cf == "auditory") & (b_side == "right")),
+        "sens_gust_labellum": _idx(is_sens & (cf == "gustatory") & (bps == "labellum")),
+        "sens_gust_front_leg": _idx(is_sens & is_leg_gust & (bps == "front_leg")),
+        "sens_gust_front_leg_female_711hd": _idx(is_sens & is_leg_gust & (bps == "front_leg") & f_711hd_mask),
+        "sens_gust_front_leg_male_cva": _idx(is_sens & is_leg_gust & (bps == "front_leg") & m_cva_mask),
+        "sens_gust_middle_leg": _idx(is_sens & (cf == "gustatory") & (bps == "middle_leg")),
+        "sens_gust_hind_leg": _idx(is_sens & (cf == "gustatory") & (bps == "hind_leg")),
+        "sens_gust_pharynx": _idx(is_sens & (cf == "gustatory") & bps.isin(["pharynx", "anterior_digestive_tract"])),
+        "sens_campaniform_all": _idx(is_sens & (cc == "campaniform_sensillum_neuron")),
+        "sens_chordotonal_all": _idx(is_sens & (cc == "chordotonal_organ_neuron")),
+        "sens_bristle_all": _idx(is_sens & (cc == "bristle_neuron")),
+        "sens_haltere_left": _idx(is_sens & (bps == "haltere") & (b_side == "left")),
+        "sens_haltere_right": _idx(is_sens & (bps == "haltere") & (b_side == "right")),
+        "sens_crop_visceral": _idx(is_sens & (cf == "visceral_mechanosensation")),
+        "sens_thermo": _idx(is_sens & (cf == "thermosensory")),
+        "sens_hygro": _idx(is_sens & (cf == "hygrosensory")),
+        "sens_nociception": _idx(is_sens & (cf == "nociception")),
+        # Per-leg mechanoreceptors (L1..R3, strictly excluding all LgLG/gustatory chemoreceptors)
+        "sens_leg_L1": _idx(is_sens & (bps == "front_leg") & (~is_leg_gust) & (b_side == "left")),
+        "sens_leg_R1": _idx(is_sens & (bps == "front_leg") & (~is_leg_gust) & (b_side == "right")),
+        "sens_leg_L2": _idx(is_sens & (bps == "middle_leg") & (~is_leg_gust) & (b_side == "left")),
+        "sens_leg_R2": _idx(is_sens & (bps == "middle_leg") & (~is_leg_gust) & (b_side == "right")),
+        "sens_leg_L3": _idx(is_sens & (bps == "hind_leg") & (~is_leg_gust) & (b_side == "left")),
+        "sens_leg_R3": _idx(is_sens & (bps == "hind_leg") & (~is_leg_gust) & (b_side == "right")),
         # Identified Central Brain & VNC Circuits
         "circuit_al_pn": _idx(cc == "antennal_lobe_projection_neuron"),
         "circuit_al_ln": _idx(cc == "antennal_lobe_local_neuron"),
@@ -535,7 +557,7 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
         "dimorphic_male_an09b017": _m_idx(m_type.str.startswith("AN09B017")),
         "dimorphic_male_pip10": _m_idx(m_type.isin(["pIP10", "pIP1", "pMP2"])),
         "dimorphic_male_tn1_song": _m_idx(m_type.str.startswith("TN1") | m_type.str.startswith("vMS") | m_type.str.startswith("IN")),
-        "dimorphic_male_fru_only": _m_idx(ms_df["fruDsx"].fillna("").isin(["fru_high", "fru_low"])),
+        "dimorphic_male_fru_only": _m_idx(~m_type.str.startswith("pC1_")),
         # Descending Neuron Modules (BANC Fig. 3 super_clusters & specific DNs)
         "dn_gf_dnp01": _idx(ct == "DNp01"),
         "dn_mdn": _idx(ct == "MDN"),
@@ -739,7 +761,18 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
     m_is_mod = np.isin(m_pre_nt, [3, 4, 5, 7])
     m_is_inh = np.isin(m_pre_nt, [1, 2, 6])
     m_is_axon_post = (m_post_lbl == "axon").to_numpy()
-    m_is_root_post = m_post_lbl.isin(["primary_dendrite", "primary_neurite", "primary.dendrite", "primary.neurite", "soma"]).to_numpy()
+    p1_pan_set = cell_groups["dimorphic_male_p1"].numpy()
+    mal_lh4_set = np.concatenate(
+        [
+            cell_groups["dimorphic_male_mal"].numpy(),
+            (n_banc + np.flatnonzero(m_type.isin(["LH004m", "LH007m"]).to_numpy())).astype(np.int32),
+        ]
+    )
+    m_is_p1_root_shunt = np.isin(m_post_i, p1_pan_set) & np.isin(m_pre_i, mal_lh4_set) & (~m_is_axon_post)
+    m_is_root_post = (
+        m_post_lbl.isin(["primary_dendrite", "primary_neurite", "primary.dendrite", "primary.neurite", "soma"]).to_numpy()
+        | m_is_p1_root_shunt
+    )
 
     m_port_code = np.zeros(len(w_ms), dtype=np.uint8)
     m_port_code[m_is_inh & (~m_is_axon_post) & (~m_is_root_post)] = 1
@@ -756,13 +789,38 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
     mito_atp_capacity = np.ones(n_total, dtype=np.float32)
     mito_atp_capacity[:n_banc] = np.clip(0.6 + 0.25 * np.log1p(mito_cnt), 0.6, 2.2)
 
+    # 3D Soma Coordinates [189,766, 3] in micrometers from v888/somas_v1.parquet
+    soma_xyz_um = np.zeros((n_total, 3), dtype=np.float32)
+    somas_path = BANC_EXTRAS_DIR / "annotations" / "v888" / "somas_v1.parquet"
+    if somas_path.is_file():
+        somas_df = pq.read_table(somas_path, columns=["pt_root_id", "pt_position"]).to_pandas()
+        s_idx = b_id_idx.get_indexer(somas_df["pt_root_id"].astype(str))
+        valid_s = s_idx >= 0
+        pos_vox = np.vstack(somas_df["pt_position"].to_numpy())[valid_s].astype(np.float32)
+        soma_xyz_um[s_idx[valid_s]] = pos_vox * np.array([0.004, 0.004, 0.045], dtype=np.float32)
+
+    # Bilateral Left<->Right Mirror Homolog Index [189,766] from banc_mirror_nblast.feather
+    mirror_partner_idx = np.arange(n_total, dtype=np.int32)
+    mir_path = BANC_EXTRAS_DIR / "nblast" / "banc_mirror_nblast.feather"
+    if mir_path.is_file():
+        import pyarrow.compute as pc
+
+        mir_tbl = pf.read_table(mir_path, columns=["root_888", "match_root_888", "score"])
+        mir_df = mir_tbl.filter(
+            pc.and_(pc.greater_equal(mir_tbl["score"], 0.45), pc.less(mir_tbl["score"], 0.99))
+        ).to_pandas()
+        mir_best = mir_df.sort_values("score", ascending=False).drop_duplicates("root_888")
+        q_idx = b_id_idx.get_indexer(mir_best["root_888"].astype(str))
+        m_idx_b = b_id_idx.get_indexer(mir_best["match_root_888"].astype(str))
+        valid_mir = (q_idx >= 0) & (m_idx_b >= 0)
+        mirror_partner_idx[q_idx[valid_mir]] = m_idx_b[valid_mir].astype(np.int32)
+
     all_pre = np.concatenate([pre_i, m_pre_i])
     all_post = np.concatenate([post_i, m_post_i])
     all_norm = np.concatenate([norm_v, m_norm_v]).astype(np.float16)
     all_port = np.concatenate([port_code, m_port_code])
 
     bundle = {
-        "schema_version": 2,
         "n_total": int(n_total),
         "n_banc": int(n_banc),
         "n_male_specific": int(n_male_spec),
@@ -771,6 +829,8 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
         "alpha_shunt": torch.from_numpy(alpha_shunt),
         "dcv_peptidergic_gain": torch.from_numpy(dcv_peptidergic_gain),
         "mito_atp_capacity": torch.from_numpy(mito_atp_capacity),
+        "soma_xyz_um": torch.from_numpy(soma_xyz_um),
+        "mirror_partner_idx": torch.from_numpy(mirror_partner_idx),
         "fca_ca_alpha1t": torch.from_numpy(fca_profiles["fca_ca_alpha1t"]),
         "fca_glucl_rdl": torch.from_numpy(fca_profiles["fca_glucl_rdl"]),
         "fca_shaker_k": torch.from_numpy(fca_profiles["fca_shaker_k"]),
@@ -792,7 +852,7 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     torch.save(bundle, OUT_PATH)
     size_mb = OUT_PATH.stat().st_size / (1024 * 1024)
-    print(f"Done in {time.perf_counter()-t0:.2f}s! Saved {OUT_PATH} ({size_mb:.1f} MB, {len(all_pre):,} edges, schema_version=2)")
+    print(f"Done in {time.perf_counter()-t0:.2f}s! Saved {OUT_PATH} ({size_mb:.1f} MB, {len(all_pre):,} edges)")
     return bundle
 
 

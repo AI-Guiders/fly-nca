@@ -231,7 +231,7 @@ class FlySpawner:
         *,
         sex_sequence: list[Literal["F", "M"]] | None = None,
     ) -> list[SpawnedFly]:
-        """Spawn a population of N flies (mix of XX females and XY males with distinct valid genomes)."""
+        """Spawn a population of N flies (mix of X:A=1.0 DsxF/Fru- females and X:A=0.5 DsxM/FruM+ males)."""
         population: list[SpawnedFly] = []
         for i in range(n_flies):
             s: Literal["F", "M"] | None = (
@@ -335,6 +335,8 @@ class MultiFlySocialArena4D:
                     hunger_level=hunger,
                 )
                 f_i.last_connectome_readout = conn_out
+                pan_motor = f_i.full_connectome.decode_motor_effectors()
+                _ = f_i.arena.step_physics(pan_motor, dt_ms=0.5)
 
                 # Coupling between 189,766-cell dimorphic circuits and behavioral state
                 f_i.wing_song_active = False

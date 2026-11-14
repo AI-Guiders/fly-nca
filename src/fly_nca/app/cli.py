@@ -105,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     panel_p.add_argument("--json-out", type=str, default=None)
     panel_p.set_defaults(func=cmd_panel)
 
-    spawn_p = sub.add_parser("spawn", help="Spawn a population of XX female & XY male 189,766-cell flies in 4D arena")
+    spawn_p = sub.add_parser("spawn", help="Spawn a population of X:A->Sxl->Tra->Dsx/Fru 189,766-cell flies in 4D arena")
     spawn_p.add_argument("--count", type=int, default=4)
     spawn_p.add_argument("--steps", type=int, default=4)
     spawn_p.add_argument("--seed", type=int, default=42)

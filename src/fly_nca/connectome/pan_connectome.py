@@ -101,6 +101,12 @@ class PanConnectomeSubstrate:
         self.betweenness_aff_eff: torch.Tensor = raw.get(
             "betweenness_aff_eff", torch.zeros(n)
         ).to(self.device, dtype=torch.float32)
+        self.soma_xyz_um: torch.Tensor = raw.get(
+            "soma_xyz_um", torch.zeros((n, 3))
+        ).to(self.device, dtype=torch.float32)
+        self.mirror_partner_idx: torch.Tensor = raw.get(
+            "mirror_partner_idx", torch.arange(n, dtype=torch.int32)
+        ).to(self.device, dtype=torch.long)
         self.cotrans_no_mask: torch.Tensor = raw.get(
             "cotrans_no_mask", torch.zeros(n, dtype=torch.uint8)
         ).to(self.device)
@@ -113,6 +119,27 @@ class PanConnectomeSubstrate:
         self.cell_groups: dict[str, torch.Tensor] = {
             k: v.to(self.device, dtype=torch.long) for k, v in raw["cell_groups"].items()
         }
+
+        # Precompute vectorized ORN glomerular and 6-leg index tensors (zero Python loops / zero .item() syncs per frame!)
+        orn_cells_list: list[torch.Tensor] = []
+        orn_glom_list: list[torch.Tensor] = []
+        for g_idx in range(50):
+            g_c = self.cell_groups.get(f"orn_glom_{g_idx:02d}")
+            if g_c is not None and g_c.numel() > 0:
+                orn_cells_list.append(g_c)
+                orn_glom_list.append(torch.full_like(g_c, g_idx))
+        self.orn_cell_idx = torch.cat(orn_cells_list) if orn_cells_list else torch.empty(0, dtype=torch.long, device=self.device)
+        self.orn_glom_id = torch.cat(orn_glom_list) if orn_glom_list else torch.empty(0, dtype=torch.long, device=self.device)
+
+        leg_cells_list: list[torch.Tensor] = []
+        leg_id_list: list[torch.Tensor] = []
+        for leg_i, l_tag in enumerate(("L1", "R1", "L2", "R2", "L3", "R3")):
+            l_c = self.cell_groups.get(f"sens_leg_{l_tag}")
+            if l_c is not None and l_c.numel() > 0:
+                leg_cells_list.append(l_c)
+                leg_id_list.append(torch.full_like(l_c, leg_i))
+        self.leg_cell_idx = torch.cat(leg_cells_list) if leg_cells_list else torch.empty(0, dtype=torch.long, device=self.device)
+        self.leg_id = torch.cat(leg_id_list) if leg_id_list else torch.empty(0, dtype=torch.long, device=self.device)
 
         pre = raw["edge_pre"].to(torch.long)
         post = raw["edge_post"].to(torch.long)
@@ -220,9 +247,14 @@ class FullConnectomeFlyNCA(nn.Module):
 
         # Living per-cell state vectors across all 189,766 cells:
         # v: membrane potential [-1..+1], a: soma firing rate [0..1], adapt: spike adaptation [0..1]
+        # synaptic_plasticity_gain: live 3-factor KC->MBON / circuit synaptic efficacy [0.2..2.0]
         self.register_buffer("v", torch.zeros(n, device=self.device, dtype=torch.float32))
         self.register_buffer("a", torch.zeros(n, device=self.device, dtype=torch.float32))
         self.register_buffer("adapt", torch.zeros(n, device=self.device, dtype=torch.float32))
+        self.register_buffer("synaptic_plasticity_gain", torch.ones(n, device=self.device, dtype=torch.float32))
+        self.glial_atp_pool: float = 1.0
+        self.sleep_debt: float = 0.0
+        self.step_counter: int = 0
 
     def group_mean_rate(self, group_name: str) -> float:
         idx = self.substrate.cell_groups.get(group_name)
@@ -241,11 +273,12 @@ class FullConnectomeFlyNCA(nn.Module):
         hunger_level: float = 0.3,
     ) -> torch.Tensor:
         """Map SensorIn (16,563 BANC sensory channels) directly onto the 189,766-cell sensory periphery."""
-        n = self.substrate.n_total
-        cg = self.substrate.cell_groups
+        sub = self.substrate
+        n = sub.n_total
+        cg = sub.cell_groups
         i_sens = torch.zeros(n, device=self.device, dtype=torch.float32)
 
-        # 1. Visual periphery (retina + lamina + ocelli: 7,686 cells)
+        # 1. Visual periphery (strictly R1-R8 retinal & ocellar photoreceptors)
         # Lamina monopolar cells (L1/L2 + Dm9/Lawf surround) high-pass filter steady illumination into spatial contrast
         vis_contrast = float(sensor.ommatidia_light.std().item()) if sensor.ommatidia_light.numel() > 1 else 0.0
         vis_drive = 0.04 + 0.65 * vis_contrast + 0.45 * float(sensor.looming_rate)
@@ -258,8 +291,9 @@ class FullConnectomeFlyNCA(nn.Module):
             i_sens[cg["circuit_lc4_looming"]] = float(sensor.looming_rate) * 1.5
 
         # Small moving target (conspecific mate/rival) excites LC10a visual tracking neurons
-        if sensor.small_target_salience > 0.05:
-            sal = float(sensor.small_target_salience) * self.courtship_vigor_scale
+        vis_sal = float(sensor.small_target_salience)
+        if vis_sal > 0.05:
+            sal = vis_sal * self.courtship_vigor_scale
             az = float(sensor.small_target_azimuth_rad)
             if az >= 0.0:
                 i_sens[cg["circuit_lc10a_left"]] = sal * 1.3
@@ -268,15 +302,11 @@ class FullConnectomeFlyNCA(nn.Module):
                 i_sens[cg["circuit_lc10a_right"]] = sal * 1.3
                 i_sens[cg["circuit_lc10a_left"]] = sal * 0.4
 
-        # 2. Olfactory periphery (3,007 ORNs across 50 glomerular classes)
-        odor_mean = 0.5 * (sensor.odor_glomeruli_lr[0] + sensor.odor_glomeruli_lr[1])
+        # 2. Vectorized Olfactory periphery (3,007 ORNs across 50 glomerular classes — zero Python loops!)
+        odor_mean = (0.5 * (sensor.odor_glomeruli_lr[0] + sensor.odor_glomeruli_lr[1])).to(self.device)
         hunger_boost = 1.0 + 0.4 * self.snpfr_hunger_scale * hunger_level
-        for g_idx in range(50):
-            val = float(odor_mean[g_idx].item())
-            if val > 1e-4:
-                g_cells = cg.get(f"orn_glom_{g_idx:02d}")
-                if g_cells is not None and g_cells.numel() > 0:
-                    i_sens[g_cells] = min(1.0, val * hunger_boost)
+        if sub.orn_cell_idx.numel() > 0:
+            i_sens[sub.orn_cell_idx] = (odor_mean[sub.orn_glom_id] * hunger_boost).clamp(0.0, 1.0)
 
         # Sex pheromone cVA (Or67d -> ORN_DA1, 224 sensory cells) & mate odor (ORN_VA1v, 171 sensory cells)
         if cva_pheromone_conc > 0.0:
@@ -287,22 +317,32 @@ class FullConnectomeFlyNCA(nn.Module):
         # 3. Johnston's Organ (1,187 sensory cells: wind vector + courtship song vibration)
         wind_mag = float(sensor.wind_vector_ego.norm().item())
         song_vib = float(sensor.sound_vibration)
-        i_sens[cg["sens_jo_left"]] = min(1.0, wind_mag + song_vib * 1.2 * self.courtship_vigor_scale)
-        i_sens[cg["sens_jo_right"]] = min(1.0, wind_mag + song_vib * 1.2 * self.courtship_vigor_scale)
+        jo_val = min(1.0, wind_mag + song_vib * 1.2 * self.courtship_vigor_scale)
+        i_sens[cg["sens_jo_left"]] = jo_val
+        i_sens[cg["sens_jo_right"]] = jo_val
 
         # 4. Gustatory & Tarsal Pheromone periphery (1,585 sensory cells across labellum, legs, pharynx)
         # Thistle et al. (2012) Cell / Kallman, Kim & Scott (2015) Nat Neurosci:
-        # Foreleg ppk23+ tarsal gustatory neurons split into F-cells (LgLG1a..4 -> AN05B102 -> P1, sensing female 7,11-HD)
-        # and M-cells (LgLG5,6,8 -> AN09B017 -> mAL -| P1, sensing male cVA / 7-tricosene anti-aphrodisiac).
-        sweet = float(sensor.taste_sweet_bitter_amino[0].item())
-        bitter = float(sensor.taste_sweet_bitter_amino[1].item())
-        amino = float(sensor.taste_sweet_bitter_amino[2].item()) + (0.6 if substrate_yeast_rich else 0.0)
+        # - Female 7,11-HD contact (requires close proximity `vis_sal > 0.20` and female conspecific) excites F-cells (LgLG5..8,1a,2 -> vAB3/PPN1 -> P1)
+        # - Male 7-tricosene/cVA contact excites M-cells (LgLG3,4 -> AN05B023/AN13B002 GABA -| P1)
+        t_vec = sensor.taste_sweet_bitter_amino
+        sweet = float(t_vec[0].item())
+        bitter = float(t_vec[1].item())
+        amino = float(t_vec[2].item()) + (0.6 if substrate_yeast_rich else 0.0)
         i_sens[cg["sens_gust_labellum"]] = min(1.0, sweet * hunger_boost + amino)
 
         f_cells = cg.get("sens_gust_front_leg_female_711hd", cg["sens_gust_front_leg"])
         m_cells = cg.get("sens_gust_front_leg_male_cva")
-        female_711hd_contact = float(mate_odor_conc) * self.courtship_vigor_scale if conspecific_is_female else 0.0
-        male_7t_contact = float(cva_pheromone_conc) * self.courtship_vigor_scale if (not conspecific_is_female or cva_pheromone_conc > 0.45) else 0.0
+        female_711hd_contact = (
+            float(mate_odor_conc) * self.courtship_vigor_scale
+            if (conspecific_is_female and vis_sal > 0.20)
+            else 0.0
+        )
+        male_7t_contact = (
+            float(cva_pheromone_conc) * self.courtship_vigor_scale
+            if (not conspecific_is_female or cva_pheromone_conc > 0.45)
+            else 0.0
+        )
         i_sens[f_cells] = min(1.0, sweet + amino + female_711hd_contact)
         if m_cells is not None:
             i_sens[m_cells] = min(1.0, bitter + male_7t_contact)
@@ -311,12 +351,12 @@ class FullConnectomeFlyNCA(nn.Module):
         i_sens[cg["sens_gust_pharynx"]] = min(1.0, sweet + amino)
         i_sens[cg["sens_nociception"]] = bitter
 
-        # 5. Legs & Haltere Proprioception / Mechanoreception (excluding gustatory cells)
-        leg_tags = ("L1", "R1", "L2", "R2", "L3", "R3")
-        for leg_i, l_tag in enumerate(leg_tags):
-            load_i = float(sensor.leg_ground_load[leg_i].item())
-            touch_i = float(sensor.bristle_touch[leg_i].item())
-            i_sens[cg[f"sens_leg_{l_tag}"]] = min(1.0, 0.35 * load_i + 0.8 * touch_i)
+        # 5. Vectorized Legs & Haltere Proprioception / Mechanoreception (zero Python loops!)
+        if sub.leg_cell_idx.numel() > 0:
+            leg_drive = (
+                0.35 * sensor.leg_ground_load.to(self.device) + 0.80 * sensor.bristle_touch.to(self.device)
+            ).clamp(0.0, 1.0)
+            i_sens[sub.leg_cell_idx] = leg_drive[sub.leg_id]
 
         halt_mag = float(sensor.haltere_coriolis_rpy.abs().mean().item())
         i_sens[cg["sens_haltere_left"]] = min(1.0, 0.25 + halt_mag)
@@ -366,24 +406,49 @@ class FullConnectomeFlyNCA(nn.Module):
             a_presyn = (self.a * self.sex_cell_mask * (1.0 + 0.45 * aa_mod).clamp(0.05, 1.50)).clamp(0.0, 1.0).unsqueeze(1)
             a_mod_presyn = (a_presyn.squeeze(1) * sub.dcv_peptidergic_gain).unsqueeze(1)
 
-            # Port 1 (ACh+ dendritic excitation), Port 2 (GABA/Glu/His chloride shunting & hyperpolarization), Port 5 (DCV peptidergic/aminergic)
-            i_exc = torch.matmul(sub.w_port1_ach, a_presyn).squeeze(1) + i_sens
+            # Port 1 (ACh+ dendritic excitation scaled by live synaptic_plasticity_gain), Port 2 (Cl- shunt), Port 5 (DCV peptidergic)
+            i_exc = torch.matmul(sub.w_port1_ach, a_presyn).squeeze(1) * self.synaptic_plasticity_gain + i_sens
             g_shunt = torch.matmul(sub.w_port2_shunt, a_presyn).squeeze(1)
             g_root = torch.matmul(sub.w_port2_root, a_presyn).squeeze(1)
             i_mod = torch.matmul(sub.w_port5_mod, a_mod_presyn).squeeze(1)
 
             # 5-Port dendritic integration with hyperpolarizing chloride reversal (-0.50*g_shunt) & divisive conductance shunt
             net_syn = i_exc - 0.50 * sub.fca_glucl_rdl * g_shunt
-            i_dend = torch.tanh(2.6 * net_syn / (1.0 + 0.30 * sub.alpha_shunt * g_shunt)) / (1.0 + 2.2 * g_root)
+            i_dend = torch.tanh(2.6 * net_syn / (1.0 + 0.30 * sub.alpha_shunt * g_shunt)) / (1.0 + 2.8 * g_root)
 
-            # Post-inhibitory Ca-alpha1T rebound + Shaker K+ adaptation
+            # Post-inhibitory Ca-alpha1T rebound + Shaker K+ adaptation + Glial ATP metabolic envelope
             rebound = 0.08 * sub.fca_ca_alpha1t * torch.relu(-self.v)
-            drive = (i_dend + 0.25 * i_mod + rebound - 0.15 * sub.fca_shaker_k * self.adapt) * sub.mito_atp_capacity.clamp(0.7, 1.4)
+            atp_env = (0.5 + 0.5 * self.glial_atp_pool) * sub.mito_atp_capacity.clamp(0.7, 1.4)
+            drive = (i_dend + 0.25 * i_mod + rebound - 0.15 * sub.fca_shaker_k * self.adapt) * atp_env
             self.v = ((1.0 - alpha_v) * self.v + alpha_v * drive).clamp(-1.0, 1.0) * self.sex_cell_mask
 
             # Soma firing rate a_i(t + dt) and spike-frequency adaptation
             self.a = (torch.relu(self.v - theta) * 2.5).clamp(0.0, 1.0) * self.sex_cell_mask
             self.adapt = (0.92 * self.adapt + 0.08 * self.a).clamp(0.0, 1.0)
+
+        self.step_counter += 1
+
+        # Live 3-Factor KC -> MBON Dopaminergic Synaptic Plasticity & Glial Metabolic Homeostasis (Port 5)
+        kc_rate = self.group_mean_rate("circuit_kc")
+        pam_rate = self.group_mean_rate("circuit_dan_pam")
+        ppl1_rate = self.group_mean_rate("circuit_dan_ppl1")
+        lr = 0.12 * self.dopr1_learning_scale * self.foraging_gain
+        if kc_rate > 0.02 and (pam_rate > 0.05 or ppl1_rate > 0.05):
+            # PAM reward depresses avoidance MBONs -> approach; PPL1 punishment depresses approach MBONs -> avoidance
+            mbon_av = cg["circuit_mbon_avoid"]
+            mbon_ap = cg["circuit_mbon_approach"]
+            self.synaptic_plasticity_gain[mbon_av] = (
+                self.synaptic_plasticity_gain[mbon_av] * (1.0 - lr * kc_rate * pam_rate)
+            ).clamp(0.25, 1.80)
+            self.synaptic_plasticity_gain[mbon_ap] = (
+                self.synaptic_plasticity_gain[mbon_ap] * (1.0 - lr * kc_rate * ppl1_rate)
+            ).clamp(0.25, 1.80)
+
+        mean_act = float(self.a.mean().item())
+        self.glial_atp_pool = max(0.20, min(1.0, self.glial_atp_pool - 0.008 * mean_act + 0.002))
+        self.sleep_debt = max(0.0, min(1.0, self.sleep_debt + 0.006 * mean_act))
+        # Activate 3,121 Glial cells (organ_id == 8) proportionally to metabolic lactate demand & sleep debt
+        self.a[sub.organ_id == 8] = min(1.0, 0.25 + 0.75 * (1.0 - self.glial_atp_pool) + 0.50 * self.sleep_debt)
 
         # Summarize organ & circuit activity
         organ_names = ("OL", "AL", "LH_SPIN", "MB", "CX", "AN_DN", "VNC", "SEZ", "GLIA")
@@ -407,13 +472,15 @@ class FullConnectomeFlyNCA(nn.Module):
             self.group_mean_rate("dimorphic_female_vpo_ovi"),
             self.group_mean_rate("dimorphic_female_asp_g"),
         )
+        pip_idx = cg["dimorphic_male_pip10"]
+        pip10_rate = float(self.a[pip_idx].topk(min(2, pip_idx.numel())).values.mean().item()) if pip_idx.numel() > 0 else 0.0
         readout = FullConnectomeReadout(
             n_active_cells=int((self.a > 0.01).sum().item()),
             mean_firing_rate=round(float(self.a.mean().item()), 5),
             organ_mean_rates=organ_rates,
             dn_cluster_rates=dn_clusters,
             male_p1_courtship_rate=round(self.group_mean_rate("dimorphic_male_p1"), 4),
-            male_pip10_song_rate=round(self.group_mean_rate("dimorphic_male_pip10"), 4),
+            male_pip10_song_rate=round(pip10_rate, 4),
             male_tn1_wing_song_rate=round(self.group_mean_rate("dimorphic_male_tn1_song"), 4),
             female_pc1_receptivity_rate=round(fem_rec, 4),
             female_ovi_oviposition_rate=round(self.group_mean_rate("eff_oviposition_uterus"), 4),
@@ -496,3 +563,100 @@ class FullConnectomeFlyNCA(nn.Module):
             imp.finish(outcome=out_c)
 
         return readout
+
+    def decode_motor_effectors(self) -> MotorOut:
+        """Decode all 1,026 BANC motor & visceral effector neurons directly into a 4D `MotorOut` command."""
+        leg_drive = torch.zeros((6, 4), device=self.device, dtype=torch.float32)
+        tarsus_grip = torch.ones((6,), device=self.device, dtype=torch.float32)
+
+        walk_dn = self.group_mean_rate("dn_cluster_walking") + 0.5 * self.group_mean_rate("dn_dnp09")
+        mdn_bwd = self.group_mean_rate("dn_mdn")
+        gait_dir = -1.0 if mdn_bwd > walk_dn + 0.05 else 1.0
+
+        # Tripod gait phase across L1(0), R1(1), L2(2), R2(3), L3(4), R3(5) modulated by real motor pool rates
+        import math
+
+        phase_base = float(self.step_counter) * 0.85 * gait_dir
+        tripod_offsets = (0.0, math.pi, math.pi, 0.0, 0.0, math.pi)
+        for leg_i, l_tag in enumerate(("L1", "R1", "L2", "R2", "L3", "R3")):
+            c_fwd = self.group_mean_rate(f"mn_{l_tag}_coxa_fwd")
+            c_bwd = self.group_mean_rate(f"mn_{l_tag}_coxa_bwd")
+            t_lift = self.group_mean_rate(f"mn_{l_tag}_troch_lift")
+            tb_flex = self.group_mean_rate(f"mn_{l_tag}_tibia_flex")
+            tb_ext = self.group_mean_rate(f"mn_{l_tag}_tibia_ext")
+            t_grip = self.group_mean_rate(f"mn_{l_tag}_tarsus_grip")
+
+            phi = phase_base + tripod_offsets[leg_i]
+            swing = max(0.0, math.sin(phi)) * min(1.0, walk_dn + mdn_bwd + c_fwd + c_bwd)
+            stance = max(0.0, -math.sin(phi))
+
+            leg_drive[leg_i, 0] = max(-1.0, min(1.0, gait_dir * (0.65 * math.cos(phi) + 1.5 * (c_fwd - c_bwd))))
+            leg_drive[leg_i, 1] = max(-1.0, min(1.0, 0.8 * swing + 1.4 * t_lift))
+            leg_drive[leg_i, 2] = max(-1.0, min(1.0, 1.6 * (tb_ext - tb_flex) + 0.5 * stance * gait_dir))
+            leg_drive[leg_i, 3] = max(-1.0, min(1.0, 0.4 + 1.2 * t_grip))
+            tarsus_grip[leg_i] = max(0.0, min(1.0, 1.0 - 0.85 * swing + 0.4 * t_grip))
+
+        w_l = self.group_mean_rate("mn_wing_power_left")
+        w_r = self.group_mean_rate("mn_wing_power_right")
+        s_l = self.group_mean_rate("mn_wing_steer_left")
+        s_r = self.group_mean_rate("mn_wing_steer_right")
+        wing_drive = torch.tensor([min(1.0, w_l * 2.0), min(1.0, w_r * 2.0)], device=self.device, dtype=torch.float32)
+        wing_pitch = torch.tensor(
+            [max(-1.0, min(1.0, s_l - s_r)), max(-1.0, min(1.0, s_r - s_l))],
+            device=self.device,
+            dtype=torch.float32,
+        )
+
+        pip_idx = self.substrate.cell_groups["dimorphic_male_pip10"]
+        pip10_r = float(self.a[pip_idx].topk(min(2, pip_idx.numel())).values.mean().item()) if pip_idx.numel() > 0 else 0.0
+        tn1_r = self.group_mean_rate("dimorphic_male_tn1_song")
+        song_amp = tn1_r if (self.fru_m_active and pip10_r > 0.15) else 0.0
+        wing_song = torch.tensor([song_amp, 0.0], device=self.device, dtype=torch.float32)
+
+        h_l = self.group_mean_rate("mn_haltere_left")
+        h_r = self.group_mean_rate("mn_haltere_right")
+        haltere_drive = torch.tensor(
+            [max(0.2, min(1.0, h_l * 2.0)), max(0.2, min(1.0, h_r * 2.0))],
+            device=self.device,
+            dtype=torch.float32,
+        )
+
+        n_roll = self.group_mean_rate("mn_neck_roll_right") - self.group_mean_rate("mn_neck_roll_left")
+        n_pitch = self.group_mean_rate("mn_neck_pitch")
+        n_yaw = self.group_mean_rate("mn_neck_yaw_right") - self.group_mean_rate("mn_neck_yaw_left")
+        neck_rpy = torch.tensor([n_roll, n_pitch, n_yaw], device=self.device, dtype=torch.float32).clamp(-1.0, 1.0)
+
+        per_val = min(1.0, 2.2 * (self.group_mean_rate("mn_proboscis_per") + 0.5 * self.group_mean_rate("mn_pharynx_pump")))
+        jump_val = min(1.0, 2.5 * max(self.group_mean_rate("mn_ttmn_jump"), self.group_mean_rate("dn_gf_dnp01")))
+        ovi_curl = min(1.0, 2.0 * self.group_mean_rate("eff_oviposition_uterus"))
+
+        return MotorOut(
+            leg_joint_drive=leg_drive,
+            tarsus_adhesion=tarsus_grip,
+            wing_drive_lr=wing_drive,
+            wing_pitch_lr=wing_pitch,
+            wing_song_mode=wing_song,
+            haltere_drive=haltere_drive,
+            neck_torque_rpy=neck_rpy,
+            proboscis_per=round(per_val, 4),
+            jump_ttmn_burst=round(jump_val, 4),
+            abdomen_bend_pitch_yaw=(round(-ovi_curl, 4), 0.0),
+        )
+
+    def step_sleep_consolidation(self, *, dcreb2b_blocked: bool = False) -> dict[str, float]:
+        """Run active/quiet sleep homeostasis across the 3,121 Glial cells & consolidate MBON plasticity."""
+        cg = self.substrate.cell_groups
+        fbt_sleep = self.group_mean_rate("circuit_cx_fbt_sleep")
+        self.glial_atp_pool = min(1.0, self.glial_atp_pool + 0.25)
+        self.sleep_debt = max(0.0, self.sleep_debt - 0.30)
+        if not dcreb2b_blocked:
+            # Active sleep consolidates short-term MBON depression into stable long-term memory trace
+            mbon_all = cg["circuit_mbon"]
+            delta = self.synaptic_plasticity_gain[mbon_all] - 1.0
+            self.synaptic_plasticity_gain[mbon_all] = (1.0 + 1.15 * delta).clamp(0.20, 1.80)
+        return {
+            "glial_atp_pool": round(self.glial_atp_pool, 4),
+            "sleep_debt": round(self.sleep_debt, 4),
+            "fbt_sleep_rate": round(fbt_sleep, 4),
+            "mbon_mean_gain": round(float(self.synaptic_plasticity_gain[cg["circuit_mbon"]].mean().item()), 4),
+        }

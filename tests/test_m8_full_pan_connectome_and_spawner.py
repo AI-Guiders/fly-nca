@@ -35,7 +35,7 @@ def test_full_189766_pan_connectome_structure_and_5_ports() -> None:
 
 @pytest.mark.skipif(not PAN_CONNECTOME_PATH.is_file(), reason="Compiled 189,766-cell pan-connectome not on disk")
 def test_fly_spawner_valid_genomes_and_male_female_social_interactions() -> None:
-    """2. Spawn XX female and XY male flies with valid genomes and verify courtship song, receptivity, and male-male boxing."""
+    """2. Spawn X:A=1.0 (Sxl->Tra->DsxF/Fru-) female and X:A=0.5 (DsxM/FruM+) male flies and verify social behavior."""
     spawner = FlySpawner(seed=108)
 
     # A. Male + Female pair near food cup -> Male courts & sings (LC10a -> P1 -> pIP10 -> TN1), Female listens (JO -> pC1)
@@ -135,3 +135,54 @@ def test_syncytial_blastoderm_embryogenesis_and_nobel1995_mutants() -> None:
     assert "sex_cascade.x_to_a_sxl_tra_dsx_fru" in replay
     assert "metamorphosis.20e_ecdysone_wave2_dati" in replay
     assert "synaptogenesis.cam_dip_dpr_9x9_tracts" in replay
+
+
+@pytest.mark.skipif(not PAN_CONNECTOME_PATH.is_file(), reason="Compiled 189,766-cell pan-connectome not on disk")
+def test_multimodal_courtship_threshold_motor_decode_and_plasticity() -> None:
+    """4. Verify multimodal courtship gate (odor vs LC10+ppk23 vs cVA brake), 1,026-cell MotorOut decode, and plasticity."""
+    from fly_nca.body import FastTensorArena4D, MotorOut
+    from fly_nca.connectome import FullConnectomeFlyNCA
+
+    fly_odor = FullConnectomeFlyNCA(sex="M")
+    sub = fly_odor.substrate
+    assert sub.soma_xyz_um.shape == (189766, 3)
+    assert sub.mirror_partner_idx.shape == (189766,)
+    assert int((sub.soma_xyz_um.norm(dim=1) > 0).sum().item()) > 140_000
+
+    arena = FastTensorArena4D(device=fly_odor.device)
+    s_dist = arena.step_physics(MotorOut.zeros(device=fly_odor.device), dt_ms=0.0)
+    s_dist.small_target_salience = 0.0
+    for _ in range(3):
+        out_odor = fly_odor.step_full_connectome(
+            s_dist, cva_pheromone_conc=0.0, mate_odor_conc=0.85, conspecific_is_female=True
+        )
+    # Odor alone at a distance stirs P1 slightly but does NOT cross multimodal courtship song threshold!
+    assert out_odor.male_p1_courtship_rate < 0.02
+    assert out_odor.male_pip10_song_rate < 0.05
+
+    # Multimodal contact (VA1v + LC10a visual + 7,11-HD foreleg ppk23 F-cells -> vAB3/PPN1 -> P1 -> pIP10)
+    fly_multi = FullConnectomeFlyNCA(sex="M")
+    s_close = arena.step_physics(MotorOut.zeros(device=fly_multi.device), dt_ms=0.0)
+    s_close.small_target_salience = 0.85
+    for _ in range(3):
+        out_multi = fly_multi.step_full_connectome(
+            s_close, cva_pheromone_conc=0.0, mate_odor_conc=0.85, conspecific_is_female=True
+        )
+    motor_multi = fly_multi.decode_motor_effectors()
+    assert out_multi.male_p1_courtship_rate > 0.10
+    assert out_multi.male_pip10_song_rate > 0.15
+    assert float(motor_multi.wing_song_mode[0].item()) > 0.04
+    assert motor_multi.leg_joint_drive.shape == (6, 4)
+
+    # Rival male high cVA -> mAL / AN05B023 GABAergic shunt suppresses P1 & pIP10 below song threshold
+    fly_rival = FullConnectomeFlyNCA(sex="M")
+    for _ in range(3):
+        out_rival = fly_rival.step_full_connectome(
+            s_close, cva_pheromone_conc=0.85, mate_odor_conc=0.0, conspecific_is_female=False
+        )
+    assert out_rival.male_p1_courtship_rate < out_multi.male_p1_courtship_rate
+
+    # Verify live sleep consolidation & glial ATP recovery on the 189,766-cell connectome
+    sleep_res = fly_multi.step_sleep_consolidation(dcreb2b_blocked=False)
+    assert sleep_res["glial_atp_pool"] > 0.90
+    assert sleep_res["sleep_debt"] < 0.05
