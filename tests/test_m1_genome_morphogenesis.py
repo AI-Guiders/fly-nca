@@ -193,6 +193,13 @@ def test_two_wave_morphogenesis_and_in_silico_genetics() -> None:
     assert abs(adult_f.tract_weight("VNC", "VNC") - 0.8036) < 1e-3
     assert abs(adult_f.tract_weight("AN_DN", "VNC") - 0.1848) < 1e-3
 
+    # 7. Self-repair after severe tract damage via local CAM lock-and-key regeneration (no pinv!)
+    damaged = adult_f.organ_tract_matrix.clone()
+    damaged[1, 3] = 0.0  # Sever AL -> MB tract
+    damaged[2, 4] = 0.0  # Sever LH_SPIN -> CX tract
+    repaired = adult_f.regenerate_tracts_nca(damaged, steps=25, repair_rate=0.45)
+    assert float((repaired - target_norm).abs().max().item()) < 1e-4
+
 
 @pytest.mark.skipif(not BANC_META_PATH.is_file(), reason="BANC v888 feather not present on disk")
 def test_banc_v888_empirical_ground_truth() -> None:

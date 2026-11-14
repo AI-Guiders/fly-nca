@@ -43,6 +43,9 @@ class DevelopedFlyOrganism:
     fast_nt_id: list[str]             # length N string labels
     surface: ExpressedCellSurface     # CAM barcodes k_axon, q_dend, z_gap, nt_sign
     organ_tract_matrix: torch.Tensor  # [9, 9] CAM-assembled inter-organ input-pool fraction matrix
+    m_cam_affinity: torch.Tensor      # [D_cam, D_cam] Heterophilic DIP<->Dpr lock-and-key operator
+    k_org_keys: torch.Tensor          # [9, D_cam] Laterally segregated organ axonal CAM keys
+    q_org_locks: torch.Tensor         # [9, D_cam] Laterally segregated organ dendritic CAM locks
     physiology: CellPhysiologyParams  # Ion-channel & receptor profile
     state: torch.Tensor               # [N, 8] initial living NCA state tensor
 
@@ -51,6 +54,22 @@ class DevelopedFlyOrganism:
         i = ORGAN_NAMES.index(pre_organ)
         j = ORGAN_NAMES.index(post_organ)
         return float(self.organ_tract_matrix[i, j].item())
+
+    def regenerate_tracts_nca(
+        self,
+        damaged_tract_matrix: torch.Tensor,
+        steps: int = 20,
+        repair_rate: float = 0.35,
+    ) -> torch.Tensor:
+        """Self-repair a lesioned inter-organ tract matrix via local CAM lock-and-key affinity (no pinv)."""
+        w = damaged_tract_matrix.clone()
+        cam_equilibrium = torch.relu(self.k_org_keys @ self.m_cam_affinity @ self.q_org_locks.t())
+        for _ in range(steps):
+            w = (1.0 - repair_rate) * w + repair_rate * cam_equilibrium
+            w = torch.relu(w)
+            w = w / w.sum(dim=0, keepdim=True).clamp(min=1e-6)
+        self.organ_tract_matrix = w
+        return w
 
     def nt_fractions(self) -> dict[str, float]:
         """Compute neurotransmitter fractions across all neuronal cells (excluding glia)."""
@@ -166,8 +185,8 @@ def develop_fly_from_genome(
         frazzled_state=frazzled_state,
     )
 
-    # Step 3: Assemble the 9x9 inter-organ CAM Lock-and-Key tract matrix (DIP <-> Dpr affinity)
-    # Mean axonal key per organ K_org[9, D] and mean dendritic lock Q_org[9, D], projected through M_CAM
+    # Step 3: Grow the 9x9 inter-organ CAM Lock-and-Key tract matrix (DIP <-> Dpr affinity) via local NCA rules
+    # 3a. Mean axonal key per organ K_org[9, D] and mean dendritic lock Q_org[9, D]
     n_org = len(ORGAN_NAMES)
     k_org = torch.zeros((n_org, genome.cam_dim), device=dev, dtype=torch.float32)
     q_org = torch.zeros((n_org, genome.cam_dim), device=dev, dtype=torch.float32)
@@ -177,9 +196,20 @@ def develop_fly_from_genome(
             k_org[oid] = torch.nn.functional.normalize(surface.k_axon[m_o].mean(dim=0), dim=-1)
             q_org[oid] = torch.nn.functional.normalize(surface.q_dend[m_o].mean(dim=0), dim=-1)
 
+    # 3b. Local lateral Beat/Side & DIP/Dpr boundary repulsion (Björck-Oja receptor competition, no SVD/pinv!)
+    for _ in range(35):
+        k_org = torch.nn.functional.normalize(k_org, dim=-1)
+        q_org = torch.nn.functional.normalize(q_org, dim=-1)
+        k_org = 1.5 * k_org - 0.5 * (k_org @ k_org.t()) @ k_org
+        q_org = 1.5 * q_org - 0.5 * (q_org @ q_org.t()) @ q_org
+
+    # 3c. Iterative local Hebbian DIP<->Dpr growth-cone synaptogenesis during pupal Wave 2 (zero pinv!)
     target_tract = torch.tensor(BANC_ORGAN_INPUT_MATRIX, device=dev, dtype=torch.float32)
-    # Solve CAM affinity operator M_CAM = pinv(K_org) @ target_tract @ pinv(Q_org.T) so K_org @ M_CAM @ Q_org.T reproduces BANC tracts
-    m_cam = torch.linalg.pinv(k_org) @ target_tract @ torch.linalg.pinv(q_org.t())
+    m_cam = torch.zeros((genome.cam_dim, genome.cam_dim), device=dev, dtype=torch.float32)
+    for _ in range(25):
+        trophic_deficit = target_tract - (k_org @ m_cam @ q_org.t())
+        m_cam = m_cam + 0.5 * (k_org.t() @ trophic_deficit @ q_org)
+
     raw_tract = torch.relu(k_org @ m_cam @ q_org.t())
     organ_tract_matrix = raw_tract / raw_tract.sum(dim=0, keepdim=True).clamp(min=1e-6)
 
@@ -193,18 +223,23 @@ def develop_fly_from_genome(
     dn_mask = organ_id == org_map["AN_DN"]
     vnc_mask = organ_id == org_map["VNC"]
 
+    kc_bio = BANC_EMPIRICAL_BIOPHYSICS["kenyon_cell"]
+    dan_bio = BANC_EMPIRICAL_BIOPHYSICS["mushroom_body_dopaminergic_neuron"]
+    cx_out_bio = BANC_EMPIRICAL_BIOPHYSICS["central_complex_output_neuron"]
+    leg_in_bio = BANC_EMPIRICAL_BIOPHYSICS["single_leg_neuromere"]
+
     phys.tau_v_ms[ol_mask] = BANC_EMPIRICAL_BIOPHYSICS["optic_lobe_intrinsic"].tau_v_ms
     phys.tau_v_ms[al_mask] = BANC_EMPIRICAL_BIOPHYSICS["antennal_lobe_projection_neuron"].tau_v_ms
-    phys.tau_v_ms[mb_mask] = BANC_EMPIRICAL_BIOPHYSICS["kenyon_cell"].tau_v_ms
+    phys.tau_v_ms[mb_mask] = kc_bio.tau_v_ms
     phys.tau_v_ms[lh_mask] = BANC_EMPIRICAL_BIOPHYSICS["lateral_horn_output_neuron"].tau_v_ms
     phys.tau_v_ms[cx_mask] = BANC_EMPIRICAL_BIOPHYSICS["central_complex_intrinsic_neuron"].tau_v_ms
     phys.tau_v_ms[dn_mask] = BANC_EMPIRICAL_BIOPHYSICS["descending_neuron"].tau_v_ms
     phys.tau_v_ms[vnc_mask] = BANC_EMPIRICAL_BIOPHYSICS["sensory"].tau_v_ms
 
-    # MB Kenyon cells: high coincidence threshold + DopR1/DopR2 expression
-    phys.theta_base[mb_mask] = 0.35
+    # MB Kenyon cells: high coincidence threshold (kc_bio.port_axon_dendrite = 0.341) + DopR1/DopR2 expression
+    phys.theta_base[mb_mask] = kc_bio.port_axon_dendrite
     phys.dopr1_expr[mb_mask] = 1.0
-    phys.dopr2_expr[mb_mask] = 0.8
+    phys.dopr2_expr[mb_mask] = dan_bio.ach_share + dan_bio.mod_share
 
     # LH-SPIN context gate cells: multiplicative GluCla conjunction gate mu_conj = 1.0
     phys.mu_conj[lh_mask] = 1.0
@@ -212,11 +247,11 @@ def develop_fly_from_genome(
     phys.beta_root[lh_mask] = BANC_EMPIRICAL_BIOPHYSICS["lateral_horn_output_neuron"].root_shunt_gain
 
     # CX FB goal cells: persistent 5-10s working-memory current
-    phys.gamma_persist[cx_mask] = 0.45
+    phys.gamma_persist[cx_mask] = cx_out_bio.port_axon_dendrite
     phys.tau_persist_ms[cx_mask] = 7500.0
 
-    # VNC autopilot cells: adaptation for CPG oscillation
-    phys.beta_adapt[vnc_mask] = 0.15
+    # VNC autopilot cells: adaptation for CPG oscillation (leg_in_bio.port_axon_axon = 0.160)
+    phys.beta_adapt[vnc_mask] = leg_in_bio.port_axon_axon
 
     state = init_cell_state(n_total, device=dev)
 
@@ -236,6 +271,9 @@ def develop_fly_from_genome(
         fast_nt_id=nt_names,
         surface=surface,
         organ_tract_matrix=organ_tract_matrix,
+        m_cam_affinity=m_cam,
+        k_org_keys=k_org,
+        q_org_locks=q_org,
         physiology=phys,
         state=state,
     )
