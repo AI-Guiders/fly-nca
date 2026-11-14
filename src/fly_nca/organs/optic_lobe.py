@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 
 from fly_nca.body.adapter import SensorIn
+from fly_nca.core.cell_state import TAU_FRAME_MS
 from fly_nca.genome.banc_biophysics import BANC_EMPIRICAL_BIOPHYSICS
 
 
@@ -36,7 +37,7 @@ class OpticLobeNCA(nn.Module):
         self.register_buffer("col_state", torch.zeros((self.n_columns, 6), device=self.device, dtype=dtype))
         self.register_buffer("prev_lum", torch.zeros((self.n_columns,), device=self.device, dtype=dtype))
 
-    def step_optic_lobe(self, sensor: SensorIn, dt_ms: float = 4.0) -> VisualProjectionDigest:
+    def step_optic_lobe(self, sensor: SensorIn, dt_ms: float = TAU_FRAME_MS) -> VisualProjectionDigest:
         """Run local hexagonal column filtering (Lamina -> Medulla -> Lobula Plate T4/T5 -> AOTU & VPN)."""
         lum = sensor.ommatidia_light.to(self.device, dtype=self.dtype)
         # Hexagonal lateral neighborhood average via circular shifts

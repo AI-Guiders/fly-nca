@@ -19,8 +19,9 @@ CH_SLEEP: int = 7    # Local sleep pressure / synaptic fatigue S_i(t) in [0, 1]
 NUM_STATE_CHANNELS: int = 8
 
 # Fundamental physical frame quanta for 1 mg Drosophila from mt-lattice-fluid MODEL §4.8:
-TAU_FAST_MS: float = 1.711   # Tissue sphere R=0.27 mm -> VNC autopilot / haltere / GF escape quantum
-TAU_FRAME_MS: float = 4.038  # Body sphere R=0.63 mm -> 200-248 Hz wingbeat & OL/CB cognitive frame
+TAU_FAST_MS: float = 1.711   # Tissue sphere R=0.27 mm -> VNC autopilot / haltere / GF escape quantum (1 tau_fast)
+TAU_FRAME_MS: float = 4.038  # Body sphere R=0.63 mm -> 200-248 Hz wingbeat & OL/CB cognitive frame (1 tau_frame)
+TAU_FRAME_TO_FAST_RATIO: float = TAU_FRAME_MS / TAU_FAST_MS  # 2.360023... fast quanta per wingbeat frame
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,9 +94,9 @@ class UniversalFlyCellUpdater(nn.Module):
         i_persist_reset: torch.Tensor | None = None,
         glial_atp_supply: torch.Tensor | None = None,
         glial_sleep_clearance: torch.Tensor | None = None,
-        dt_ms: float = 1.0,
+        dt_ms: float = TAU_FAST_MS,
     ) -> torch.Tensor:
-        """Advance cell state s[N, 8] by dt_ms milliseconds."""
+        """Advance cell state s[N, 8] by dt_ms (defaults to 1 natural fast quantum TAU_FAST_MS = 1.711 ms)."""
         v = state[:, CH_V]
         a = state[:, CH_A]
         ca = state[:, CH_CA]

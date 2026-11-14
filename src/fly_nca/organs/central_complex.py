@@ -22,6 +22,7 @@ from fly_nca.core.cell_state import (
     CH_A,
     CH_PERSIST,
     CH_V,
+    TAU_FRAME_MS,
     CellPhysiologyParams,
     UniversalFlyCellUpdater,
     init_cell_state,
@@ -188,9 +189,9 @@ class CentralComplexNCA(nn.Module):
         ppl1_wake_da: float = 0.2,
         visual_darkness: bool = False,
         gtacr1_inhibit_fb_goal: bool = False,
-        dt_ms: float = 4.0,
+        dt_ms: float = TAU_FRAME_MS,
     ) -> CXNavigationReadout:
-        """Advance all 66 CX NCA cells using purely local/topological 5-port updates (no atan2 steering!)."""
+        """Advance all 71 CX NCA cells by 1 cognitive wingbeat frame (TAU_FRAME_MS = 4.038 ms)."""
         dev = self.device
         dt = float(dt_ms)
 

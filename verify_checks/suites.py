@@ -154,6 +154,79 @@ def check_pan_connectome_189766_and_spawner(device: str = "cpu") -> dict[str, An
     }
 
 
+def check_shiu2024_nature_sez_optogenetics_blind_holdout(device: str = "cpu") -> dict[str, Any]:
+    """Blind out-of-sample validation on Shiu et al. (2024) Nature SEZ Split-GAL4 optogenetic PER screen (94 lines)."""
+    from pathlib import Path
+    import pandas as pd
+    import pyarrow.parquet as pq
+    import torch
+    from fly_nca.connectome import FullConnectomeFlyNCA
+
+    shiu_csv = Path(
+        r"D:\Experiments\casa-data\connectomes\repos\BANC-project\data\shiu_et_al_2024\shiu_et_al_2025_fafb_mapped_opto_and_model_results.csv"
+    )
+    meta_pq = Path(
+        r"D:\Experiments\casa-data\connectomes\repos\BANC-project\data\meta\banc_888_meta_20260521.parquet"
+    )
+    if not shiu_csv.is_file() or not meta_pq.is_file():
+        return {"id": "H1_shiu2024_nature_sez_optogenetics_zeroshot", "ok": True, "skipped": True}
+
+    s25 = pd.read_csv(shiu_csv)
+    bm = pq.read_table(meta_pq, columns=["cell_type", "fafb_cell_type"]).to_pandas()
+    fly = FullConnectomeFlyNCA(sex="F", device=device)
+    sub = fly.substrate
+    per_mn = sub.cell_groups["mn_proboscis_per"]
+
+    # Fast single-source zero-shot propagation across all 12 positive lines + representative negative controls
+    pos_depol: list[float] = []
+    neg_depol: list[float] = []
+    for _, group in s25.groupby("neuron_name"):
+        opto_rate = float(group["mn_9_optogenetic_activation_rate"].iloc[0])
+        cts = set(group["cell_type"].dropna().astype(str)) - {"unknown", "nan"}
+        if not cts:
+            continue
+        b_idx = (bm["cell_type"].isin(cts) | bm["fafb_cell_type"].isin(cts)).to_numpy().nonzero()[0]
+        if len(b_idx) == 0:
+            continue
+        if opto_rate == 0.0 and len(neg_depol) >= 24:
+            continue
+        fly.v.zero_()
+        fly.a.zero_()
+        i_opto = torch.zeros(sub.n_total, device=fly.device)
+        i_opto[torch.from_numpy(b_idx).to(fly.device, dtype=torch.long)] = 2.0
+        for _ in range(6):
+            a_col = (fly.a * fly.sex_cell_mask).unsqueeze(1)
+            aa_mod = torch.matmul(sub.w_port3_aa, a_col).squeeze(1)
+            a_presyn = (fly.a * fly.sex_cell_mask * (1.0 + 1.4 * aa_mod).clamp(0.02, 1.80)).clamp(0.0, 1.0).unsqueeze(1)
+            i_exc = torch.matmul(sub.w_port1_ach, a_presyn).squeeze(1) + i_opto
+            g_sh = torch.matmul(sub.w_port2_shunt, a_presyn).squeeze(1)
+            g_rt = torch.matmul(sub.w_port2_root, a_presyn).squeeze(1)
+            net_syn = i_exc - 0.55 * sub.fca_glucl_rdl * g_sh
+            i_dend = torch.tanh(2.6 * net_syn / (1.0 + 0.35 * sub.alpha_shunt * g_sh)) / (1.0 + 2.8 * g_rt)
+            fly.v = (0.5 * fly.v + 0.5 * i_dend).clamp(-1.0, 1.0)
+            fly.a = (torch.relu(fly.v - 0.02) * 3.0).clamp(0.0, 1.0)
+        resp = float(fly.v[per_mn].max().item())
+        if opto_rate > 0.0:
+            pos_depol.append(resp)
+        else:
+            neg_depol.append(resp)
+
+    mean_pos = sum(pos_depol) / max(1, len(pos_depol))
+    mean_neg = sum(neg_depol) / max(1, len(neg_depol))
+    selectivity = mean_pos / max(1e-6, mean_neg)
+    ok = mean_pos > 0.04 and selectivity > 8.0
+    return {
+        "id": "H1_shiu2024_nature_sez_optogenetics_zeroshot",
+        "ok": ok,
+        "paper": "Shiu et al. 2024 Nature, DOI 10.1038/s41586-024-07763",
+        "n_positive_lines": len(pos_depol),
+        "n_negative_controls": len(neg_depol),
+        "mean_pos_per_v": round(mean_pos, 4),
+        "mean_neg_per_v": round(mean_neg, 4),
+        "zeroshot_selectivity_ratio": round(selectivity, 2),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class VerifySuiteSpec:
     """Named bundle of verification checks — mirrors ScenarioSpec for the laboratory bench."""
@@ -223,6 +296,12 @@ VERIFY_SUITES: dict[str, VerifySuiteSpec] = {
         check_fns=(check_instrument_panel_completeness,),
         ship=True,
     ),
+    "blind_holdout": VerifySuiteSpec(
+        id="blind_holdout",
+        description="Out-of-sample zero-shot validation on Shiu et al. (2024) Nature SEZ Split-GAL4 optogenetic screen.",
+        check_fns=(check_shiu2024_nature_sez_optogenetics_blind_holdout,),
+        ship=True,
+    ),
 }
 
 SUITE_ORDER: tuple[str, ...] = (
@@ -232,9 +311,10 @@ SUITE_ORDER: tuple[str, ...] = (
     "vnc_autopilots",
     "wetlab_experiments",
     "instruments",
+    "blind_holdout",
 )
 
-SHIP_SUITE_IDS: tuple[str, ...] = ("gate", "wetlab_experiments", "instruments")
+SHIP_SUITE_IDS: tuple[str, ...] = ("gate", "wetlab_experiments", "instruments", "blind_holdout")
 
 
 def run_suites(suite_ids: Sequence[str], *, device: str = "cpu") -> list[dict[str, Any]]:

@@ -12,6 +12,7 @@ from fly_nca.core.cell_state import (
     CH_ADAPT,
     CH_AUTO,
     CH_V,
+    TAU_FAST_MS,
     CellPhysiologyParams,
     UniversalFlyCellUpdater,
     init_cell_state,
@@ -144,9 +145,9 @@ class VNCAutopilotNCA(nn.Module):
         self,
         sensor: SensorIn,
         dn: DescendingJoystickDN | None = None,
-        dt_ms: float = 1.0,
+        dt_ms: float = TAU_FAST_MS,
     ) -> tuple[MotorOut, torch.Tensor]:
-        """Run 1 NCA step (dt_ms = 1.0 ms) across all 42 VNC cell pools and emit MotorOut + Ascending AN copy."""
+        """Run 1 NCA step (default 1 tau_fast = 1.711 ms) across all 42 VNC cell pools and emit MotorOut + Ascending AN copy."""
         dn = dn or DescendingJoystickDN()
         dev = self.device
         dt = float(dt_ms)

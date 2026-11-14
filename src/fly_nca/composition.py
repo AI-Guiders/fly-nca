@@ -8,6 +8,7 @@ import torch.nn as nn
 
 from fly_nca.body import FastTensorArena3D, MotorOut, SensorIn
 from fly_nca.core import GlialSubstrateNCA, HemolymphState
+from fly_nca.core.cell_state import TAU_FAST_MS, TAU_FRAME_MS
 from fly_nca.genome.banc_biophysics import (
     BANC_EMPIRICAL_BIOPHYSICS,
     BANC_ORGAN_INPUT_MATRIX,
@@ -110,7 +111,7 @@ class FlyNCAComposition(nn.Module):
             looming_thresh = lc_bio.ach_share + lc_bio.port_axon_axon  # 0.743 from BANC lobula_columnar
 
             # 1. Autonomous Optic Lobe Radar (OL-NCA, 892 hex columns -> AOTU/BU + VPN)
-            vis = self.optic_lobe.step_optic_lobe(sensor, dt_ms=4.0)
+            vis = self.optic_lobe.step_optic_lobe(sensor, dt_ms=TAU_FRAME_MS)
             imp.activate(
                 "optic_lobe.vpn_digest",
                 organ="OL",
@@ -242,7 +243,7 @@ class FlyNCAComposition(nn.Module):
                 sleep_need_alg=sleep_need,
                 visual_darkness=visual_darkness,
                 gtacr1_inhibit_fb_goal=gtacr1_inhibit_fb_goal,
-                dt_ms=4.0,
+                dt_ms=TAU_FRAME_MS,
             )
             eb_rates = self.central_complex.state[0:16, 1]
             fb_persist = self.central_complex.state[16:32, 3]
@@ -285,11 +286,12 @@ class FlyNCAComposition(nn.Module):
                 proboscis_fdg=chem.fdg_proboscis_cmd,
             )
 
-            # 6. Run 4 fast ticks (4 x 1.0 ms = 4.0 ms) of VNC 200-Hz Autopilot & 3D Arena physics
+            # 6. Run 4 fast sub-ticks totaling 1 cognitive wingbeat frame (TAU_FRAME_MS = 4.038 ms) of VNC Autopilot & 3D Arena physics
             motor = MotorOut.zeros(device=self.device, dtype=self.dtype)
+            sub_dt_ms = 0.25 * TAU_FRAME_MS
             for _ in range(4):
-                motor, self.last_an_efference = self.vnc_autopilot.step_autopilot(sensor, dn=dn_cmd, dt_ms=1.0)
-                sensor = arena.step_physics(motor, dt_ms=1.0)
+                motor, self.last_an_efference = self.vnc_autopilot.step_autopilot(sensor, dn=dn_cmd, dt_ms=sub_dt_ms)
+                sensor = arena.step_physics(motor, dt_ms=sub_dt_ms)
 
             active_routes: list[str] = []
             route_port = BiologicalPort.PORT1_ACH

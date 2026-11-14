@@ -22,7 +22,7 @@ Zero hand-tuned magic numbers (Model Purity Contract, mirroring `mt-lattice-flui
 from __future__ import annotations
 
 from dataclasses import dataclass
-from fly_nca.core.cell_state import TAU_FAST_MS
+from fly_nca.core.cell_state import TAU_FAST_MS, TAU_FRAME_MS, TAU_FRAME_TO_FAST_RATIO
 
 # Reference median cable length of BANC `sensory` super_class (um) from banc_888_metrics.feather
 L_SENSORY_REF_UM: float = 241.53
@@ -89,6 +89,16 @@ class EmpiricalClassBiophysics:
     def tau_v_ms(self) -> float:
         """Parameter-free membrane time constant (ms) from cable capacitance and TAU_FAST_MS = 1.711 ms."""
         return TAU_FAST_MS * (self.l2_cable_length_um / L_SENSORY_REF_UM)
+
+    @property
+    def tau_v_in_fast_quanta(self) -> float:
+        """Natural dimensionless time constant in units of tau_fast (= l2_cable_length_um / 241.53 um)."""
+        return self.l2_cable_length_um / L_SENSORY_REF_UM
+
+    @property
+    def tau_v_in_frames(self) -> float:
+        """Natural dimensionless time constant in units of cognitive wingbeat frames tau_frame (4.038 ms)."""
+        return self.tau_v_ms / TAU_FRAME_MS
 
     @property
     def dendritic_shunt_gain(self) -> float:

@@ -7,6 +7,7 @@ import math
 import torch
 
 from fly_nca.body.adapter import MotorOut, SensorIn
+from fly_nca.core.cell_state import TAU_FAST_MS, TAU_FRAME_MS
 
 
 @dataclass
@@ -67,14 +68,24 @@ class FastTensorArena3D:
         """World-frame head orientation = thorax orientation + neck gimbal angles."""
         return self.thorax_rpy + self.neck_rpy
 
-    def step_physics(self, motor: MotorOut, dt_ms: float = 1.0) -> SensorIn:
-        """Advance 3D body kinematics, aerodynamics, and sensory fields by dt_ms."""
+    @property
+    def time_fast_quanta(self) -> float:
+        """Elapsed organism time in natural fast reflex quanta (tau_fast = 1.711 ms)."""
+        return self.time_ms / TAU_FAST_MS
+
+    @property
+    def time_frames(self) -> float:
+        """Elapsed organism time in natural cognitive wingbeat frames (tau_frame = 4.038 ms)."""
+        return self.time_ms / TAU_FRAME_MS
+
+    def step_physics(self, motor: MotorOut, dt_ms: float = TAU_FAST_MS) -> SensorIn:
+        """Advance 3D body kinematics, aerodynamics, and sensory fields by dt_ms (default 1 tau_fast = 1.711 ms)."""
         dt_s = float(dt_ms) * 1e-3
         self.time_ms += float(dt_ms)
         dev = self.pos_xyz.device
 
-        # 1. Update 6 legs x 4 joints (body-coxa=0, coxa-trochanter=1, femur-tibia=2, tibia-tarsus=3)
-        alpha_joint = min(1.0, dt_ms / 4.0)
+        # 1. Update 6 legs x 4 joints (1 cognitive wingbeat frame = TAU_FRAME_MS = 4.038 ms)
+        alpha_joint = min(1.0, dt_ms / TAU_FRAME_MS)
         prev_coxa = self.leg_angles[:, 0].clone()
         self.leg_angles = ((1.0 - alpha_joint) * self.leg_angles + alpha_joint * motor.leg_joint_drive).clamp(-1.0, 1.0)
         d_coxa = self.leg_angles[:, 0] - prev_coxa
