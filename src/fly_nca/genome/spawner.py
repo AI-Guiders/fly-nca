@@ -583,8 +583,8 @@ class MultiFlySocialArena3D:
                         )
                         child_genome = self.spawner.recombine_genomes(f_i.genome, pat_genome)
                         egg_pos = (
-                            round(xi + self.spawner.rng.uniform(-0.0015, 0.0015), 5),
-                            round(yi + self.spawner.rng.uniform(-0.0015, 0.0015), 5),
+                            round(xi + self.spawner.rng.uniform(-0.0040, 0.0040), 5),
+                            round(yi + self.spawner.rng.uniform(-0.0040, 0.0040), 5),
                             0.0,
                         )
                         egg_fly = self.spawner.spawn_fly(
@@ -605,6 +605,26 @@ class MultiFlySocialArena3D:
                                 "generation": child_genome.generation,
                             }
                         )
+
+                # Advance 3D spatial locomotion from decoded motor & social pursuit
+                if nearest_j is not None and f_i.wing_song_active:
+                    # Male chases & circles female during courtship song
+                    dx, dy = nearest_j.pos_xyz[0] - xi, nearest_j.pos_xyz[1] - yi
+                    target_yaw = math.atan2(dy, dx)
+                    f_i.arena.thorax_rpy[2] = target_yaw
+                    if nearest_dist > 0.0022:
+                        f_i.arena.pos_xyz[0] += 0.0005 * math.cos(target_yaw)
+                        f_i.arena.pos_xyz[1] += 0.0005 * math.sin(target_yaw)
+                    else:
+                        # Lateral courtship circling around female
+                        f_i.arena.pos_xyz[0] += 0.0004 * (-math.sin(target_yaw))
+                        f_i.arena.pos_xyz[1] += 0.0004 * math.cos(target_yaw)
+                else:
+                    yaw_now = float(f_i.arena.thorax_rpy[2].item()) + 0.22 * (1.0 if i % 2 == 0 else -1.0)
+                    f_i.arena.thorax_rpy[2] = yaw_now
+                    step_d = 0.00045 * f_i.genome.foraging_locomotion_gain
+                    f_i.arena.pos_xyz[0] = max(-0.0065, min(0.0065, xi + step_d * math.cos(yaw_now)))
+                    f_i.arena.pos_xyz[1] = max(-0.0065, min(0.0065, yi + step_d * math.sin(yaw_now)))
 
                 snapshots.append(self._build_snapshot(f_i, n_active=conn_out.n_active_cells, conn_out=conn_out))
 
@@ -634,6 +654,9 @@ class MultiFlySocialArena3D:
             "fru_m": f_i.genome.fru_m_active,
             "foraging_allele": f_i.genome.foraging_allele,
             "pos_xyz": [round(c, 5) for c in f_i.pos_xyz],
+            "yaw_rad": round(float(f_i.arena.thorax_rpy[2].item()), 4),
+            "leg_angles": [round(float(x), 3) for x in f_i.arena.leg_angles[:, 0].tolist()],
+            "organ_rates": conn_out.organ_mean_rates if conn_out is not None else {},
             "behavior": f_i.current_behavior,
             "n_active_cells_189k": n_active,
             "wing_song_active": f_i.wing_song_active,
