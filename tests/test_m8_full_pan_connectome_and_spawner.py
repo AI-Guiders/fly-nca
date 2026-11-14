@@ -119,3 +119,19 @@ def test_syncytial_blastoderm_embryogenesis_and_nobel1995_mutants() -> None:
     # D. Zygotic odd-paired (opa^-) pioneer mutant (PLoS Genetics 2021 PMC8516289): loses 7->14 stripe frequency doubling
     opa_mut = genome.run_syncytial_embryogenesis_nca(n_positions=64, opa_mutant=True)
     assert float((opa_mut.opa_14_stripes - opa_mut.zelda_7_stripes).abs().max().item()) == 0.0
+
+    # E. Verify ImpulseRecorder traces Embryogenesis (L0), Two-Wave Morphogenesis (L1), and 189,766-cell Pan-Connectome Wave!
+    from fly_nca.genome import develop_fly_from_genome
+    from fly_nca.nervous import DebugLevel, ImpulseRecorder, format_impulse_replay
+
+    rec = ImpulseRecorder(level=DebugLevel.FULL)
+    _ = genome.run_syncytial_embryogenesis_nca(n_positions=64, bcd_mutant=True, recorder=rec)
+    _ = develop_fly_from_genome(genome, stage="adult", sex="M", scale=0.05, recorder=rec)
+    replay = format_impulse_replay(rec.last_impulses())
+    assert "outcome=MUTANT_BICAUDAL_BCD" in replay
+    assert "oogenesis.maternal_mrna_poles" in replay
+    assert "syncytium.3utr_translational_repression" in replay
+    assert "cellularization.zelda_to_opa_frequency_doubling" in replay
+    assert "sex_cascade.x_to_a_sxl_tra_dsx_fru" in replay
+    assert "metamorphosis.20e_ecdysone_wave2_dati" in replay
+    assert "synaptogenesis.cam_dip_dpr_9x9_tracts" in replay

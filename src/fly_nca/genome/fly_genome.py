@@ -161,6 +161,7 @@ class FlyGenome:
         bcd_mutant: bool = False,
         nos_mutant: bool = False,
         opa_mutant: bool = False,
+        recorder: object | None = None,
     ) -> SyncytialEmbryoReadout:
         """Pure Local Syncytial Blastoderm -> Cellularization -> Gap/Pair-Rule/Hox NCA (Zero global coordinate x!).
 
@@ -268,7 +269,7 @@ class FlyGenome:
             else:
                 seg_ids[i] = 7  # A5_A8_Abdomen (Abd-B + Tll)
 
-        return SyncytialEmbryoReadout(
+        readout = SyncytialEmbryoReadout(
             segment_ids=seg_ids,
             bicoid_protein=bcd,
             nanos_protein=nos,
@@ -281,9 +282,92 @@ class FlyGenome:
             pole_cells_mask=pole_cells,
         )
 
-    def run_french_flag_segmentation_nca(self, n_positions: int = 64, steps: int = 16) -> torch.Tensor:
+        from fly_nca.nervous import BiologicalPort, ImpulseChannel, ImpulseOutcome, ImpulseRecorder, impulse_recorder
+
+        rec = recorder if isinstance(recorder, ImpulseRecorder) else impulse_recorder()
+        with rec.channel(ImpulseChannel.EMBRYOGENESIS_SYNCYTIUM) as imp:
+            imp.activate(
+                "oogenesis.maternal_mrna_poles",
+                organ="OOCYTE",
+                port=BiologicalPort.PORT_MATERNAL_MRNA,
+                inputs={
+                    "bcd_pole_0": round(float(bcd[0].item()), 4),
+                    "nos_pole_end": round(float(nos[-1].item()), 4),
+                    "pole_cells_pgc": int(pole_cells.sum().item()),
+                    "bcd_mutant": bcd_mutant,
+                    "nos_mutant": nos_mutant,
+                },
+            )
+            imp.suppress(
+                "syncytium.3utr_translational_repression",
+                organ="SYNCYTIUM",
+                port=BiologicalPort.PORT_TRANSLATIONAL_3UTR,
+                reason=(
+                    f"Bicoid repressed anterior Caudal (cad[0]={float(cad[0]):.3f} vs cad[-1]={float(cad[-1]):.3f}); "
+                    f"Nanos repressed posterior Hunchback (hb[-1]={float(hb[-1]):.3f} vs hb[0]={float(hb[0]):.3f})"
+                ),
+                rejected_above_floor=int((cad < 0.35).sum().item() + (hb < 0.25).sum().item()),
+                inputs={
+                    "cad_anterior": round(float(cad[0].item()), 4),
+                    "cad_posterior": round(float(cad[-1].item()), 4),
+                    "hb_anterior": round(float(hb[0].item()), 4),
+                    "hb_posterior": round(float(hb[-1].item()), 4),
+                },
+            )
+            imp.score(
+                "blastoderm.gap_gene_domains",
+                organ="BLASTODERM",
+                port=BiologicalPort.PORT_PIONEER_TF,
+                potentials=[
+                    {"id": "hunchback_max", "score": round(float(hb.max().item()), 4)},
+                    {"id": "kruppel_max", "score": round(float(kr.max().item()), 4)},
+                    {"id": "knirps_max", "score": round(float(kni.max().item()), 4)},
+                    {"id": "tailless_max", "score": round(float(tll.max().item()), 4)},
+                ],
+                inputs={"n_nuclei": n_positions},
+            )
+            z7_count = int((zelda_7[1:] > zelda_7[:-1]).sum().item() + int(zelda_7[0].item() > 0.5))
+            o14_count = int((opa_14[1:] > opa_14[:-1]).sum().item() + int(opa_14[0].item() > 0.5))
+            imp.threshold(
+                "cellularization.zelda_to_opa_frequency_doubling",
+                organ="BLASTODERM",
+                port=BiologicalPort.PORT_PIONEER_TF,
+                reason=f"Zelda 7-stripe enhancer ({z7_count} peaks) -> Opa frequency doubling ({o14_count} parasegment peaks, opa_mutant={opa_mutant})",
+                inputs={"zelda_peaks": z7_count, "opa_peaks": o14_count, "opa_mutant": opa_mutant},
+            )
+            unique_segs = sorted(seg_ids.unique().tolist())
+            seg_names = [SEGMENTS_8[idx] for idx in unique_segs]
+            imp.select(
+                "embryo.hox_neuromere_commitment",
+                organ="HOX_AXIS",
+                port=BiologicalPort.PORT_PIONEER_TF,
+                selected=seg_names,
+                potentials=[
+                    {"id": SEGMENTS_8[idx], "score": int((seg_ids == idx).sum().item())}
+                    for idx in unique_segs
+                ],
+            )
+            if bcd_mutant:
+                outcome = ImpulseOutcome.MUTANT_BICAUDAL_BCD
+            elif nos_mutant:
+                outcome = ImpulseOutcome.MUTANT_ABDOMENLESS_NOS
+            elif opa_mutant:
+                outcome = ImpulseOutcome.MUTANT_NO_DOUBLING_OPA
+            else:
+                outcome = ImpulseOutcome.EMBRYO_WT_8_SEGMENTS
+            imp.finish(outcome=outcome)
+
+        return readout
+
+    def run_french_flag_segmentation_nca(
+        self,
+        n_positions: int = 64,
+        steps: int = 16,
+        *,
+        recorder: object | None = None,
+    ) -> torch.Tensor:
         """Run syncytial blastoderm -> Gap/Pair-rule/Hox NCA and return the 8 Hox neuromere IDs [n_positions]."""
-        readout = self.run_syncytial_embryogenesis_nca(n_positions=n_positions, gap_steps=steps)
+        readout = self.run_syncytial_embryogenesis_nca(n_positions=n_positions, gap_steps=steps, recorder=recorder)
         return readout.segment_ids
 
 

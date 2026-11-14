@@ -97,6 +97,7 @@ def develop_fly_from_genome(
     ectopic_broad_14a: bool = False,
     frazzled_state: str = "wt",
     device: torch.device | str = "cpu",
+    recorder: object | None = None,
 ) -> DevelopedFlyOrganism:
     """Grow the complete Fly-NCA organism from a single seed via Two-Wave Morphogenesis.
 
@@ -107,8 +108,8 @@ def develop_fly_from_genome(
     genome = genome or FlyGenome()
     dev = torch.device(device)
 
-    # Step 1: Run French Flag + Gap + Pair-Rule -> Hox segmentation NCA
-    _ = genome.run_french_flag_segmentation_nca(n_positions=64, steps=16)
+    # Step 1: Run Syncytial Blastoderm -> Gap + Pair-Rule -> Hox segmentation NCA
+    _ = genome.run_french_flag_segmentation_nca(n_positions=64, steps=16, recorder=recorder)
     seg_map = {name: idx for idx, name in enumerate(SEGMENTS_8)}
     org_map = {name: idx for idx, name in enumerate(ORGAN_NAMES)}
 
@@ -255,7 +256,7 @@ def develop_fly_from_genome(
 
     state = init_cell_state(n_total, device=dev)
 
-    return DevelopedFlyOrganism(
+    developed = DevelopedFlyOrganism(
         stage=stage,
         sex=sex,
         n_cells=n_total,
@@ -277,3 +278,56 @@ def develop_fly_from_genome(
         physiology=phys,
         state=state,
     )
+
+    from fly_nca.nervous import BiologicalPort, ImpulseChannel, ImpulseOutcome, ImpulseRecorder, impulse_recorder
+
+    rec = recorder if isinstance(recorder, ImpulseRecorder) else impulse_recorder()
+    with rec.channel(ImpulseChannel.MORPHOGENESIS_TWO_WAVE) as imp:
+        x_to_a = 1.0 if sex == "F" else 0.5
+        sxl_on = sex == "F"
+        dsx_iso = "DsxF" if sxl_on else "DsxM"
+        fru_m = not sxl_on
+        imp.select(
+            "sex_cascade.x_to_a_sxl_tra_dsx_fru",
+            organ="GENOME",
+            port=BiologicalPort.PORT_SXL_TRA_SPLICING,
+            selected=[f"X_A_{x_to_a}", f"Sxl_{'ON' if sxl_on else 'OFF'}", dsx_iso, f"FruM_{fru_m}"],
+            potentials=[
+                {"id": "x_to_autosome_ratio", "score": x_to_a},
+                {"id": "dimorphic_cells", "score": int(sex_dimorphic.sum().item())},
+            ],
+        )
+        imp.activate(
+            "neurogenesis.wave1_imp_larval_core",
+            organ="WAVE1",
+            port=BiologicalPort.PORT_PIONEER_TF,
+            inputs={"n_wave1_primary": n_wave1, "stage": stage},
+        )
+        if stage == "adult":
+            imp.threshold(
+                "metamorphosis.20e_ecdysone_wave2_dati",
+                organ="WAVE2",
+                port=BiologicalPort.PORT_PIONEER_TF,
+                reason=f"20E Ecdysone triggered Wave 2 dati+ expansion (+{n_wave2} secondary cells -> {n_total} total)",
+                inputs={"n_wave2_secondary": n_wave2, "ectopic_broad_14a": ectopic_broad_14a},
+            )
+        imp.route(
+            "synaptogenesis.cam_dip_dpr_9x9_tracts",
+            organ="CAM_TRACTS",
+            port=BiologicalPort.PORT_CAM_DIP_DPR,
+            selected=["OL->OL", "AL->MB", "LH_SPIN->CX", "AN_DN->VNC"],
+            potentials=[
+                {"id": "OL->OL", "score": round(developed.tract_weight("OL", "OL"), 4)},
+                {"id": "AL->MB", "score": round(developed.tract_weight("AL", "MB"), 4)},
+                {"id": "LH_SPIN->CX", "score": round(developed.tract_weight("LH_SPIN", "CX"), 4)},
+                {"id": "AN_DN->VNC", "score": round(developed.tract_weight("AN_DN", "VNC"), 4)},
+            ],
+            inputs={"frazzled_state": frazzled_state},
+        )
+        imp.finish(
+            outcome=(
+                ImpulseOutcome.ADULT_ECLOSION_READY if stage == "adult" else ImpulseOutcome.LARVA_HATCHED_READY
+            ),
+        )
+
+    return developed

@@ -293,6 +293,7 @@ class FullConnectomeFlyNCA(nn.Module):
         hunger_level: float = 0.3,
         n_synaptic_hops: int = 6,
         dt_ms: float = 4.038,
+        recorder: object | None = None,
     ) -> FullConnectomeReadout:
         """Advance all 189,766 cells by `n_synaptic_hops` through the 5-port sparse CSR connectome matrices.
 
@@ -360,7 +361,7 @@ class FullConnectomeFlyNCA(nn.Module):
             self.group_mean_rate("dimorphic_female_vpo_ovi"),
             self.group_mean_rate("dimorphic_female_asp_g"),
         )
-        return FullConnectomeReadout(
+        readout = FullConnectomeReadout(
             n_active_cells=int((self.a > 0.01).sum().item()),
             mean_firing_rate=round(float(self.a.mean().item()), 5),
             organ_mean_rates=organ_rates,
@@ -376,3 +377,76 @@ class FullConnectomeFlyNCA(nn.Module):
             dng02_flight_rate=round(self.group_mean_rate("dn_dng02"), 4),
             lbl40_t3_rate=round(self.group_mean_rate("LBL40_t3"), 4),
         )
+
+        from fly_nca.nervous import BiologicalPort, ImpulseChannel, ImpulseOutcome, ImpulseRecorder, impulse_recorder
+
+        rec = recorder if isinstance(recorder, ImpulseRecorder) else impulse_recorder()
+        with rec.channel(ImpulseChannel.PAN_CONNECTOME_WAVE) as imp:
+            n_sens_active = int((i_sens > 0.01).sum().item())
+            n_silenced = int((self.sex_cell_mask == 0).sum().item())
+            imp.activate(
+                "pan_connectome.sensory_periphery_16563",
+                organ="SENSORY_PERIPHERY",
+                port=BiologicalPort.PORT1_ACH,
+                inputs={
+                    "active_sensory_cells": n_sens_active,
+                    "cva_pheromone": round(cva_pheromone_conc, 4),
+                    "mate_odor": round(mate_odor_conc, 4),
+                },
+            )
+            imp.suppress(
+                "pan_connectome.dsx_fru_sex_dimorphism_mask",
+                organ="GENOME_DIMORPHISM",
+                port=BiologicalPort.PORT_SXL_TRA_SPLICING,
+                reason=f"Cell-autonomous {self.dsx_isoform} + FruM={self.fru_m_active} masked {n_silenced} opposite-sex cells",
+                rejected_above_floor=n_silenced,
+                inputs={"dsx": self.dsx_isoform, "fru_m": self.fru_m_active},
+            )
+            imp.score(
+                "pan_connectome.6hop_wave_189766_cells",
+                organ="PAN_CONNECTOME",
+                port=BiologicalPort.PORT3_AXO_AXONIC,
+                potentials=[
+                    {"id": "AL", "score": organ_rates["AL"]},
+                    {"id": "MB", "score": organ_rates["MB"]},
+                    {"id": "LH_SPIN", "score": organ_rates["LH_SPIN"]},
+                    {"id": "CX", "score": organ_rates["CX"]},
+                    {"id": "VNC", "score": organ_rates["VNC"]},
+                ],
+                inputs={"n_active_cells": readout.n_active_cells, "n_hops": n_synaptic_hops},
+            )
+            imp.route(
+                "pan_connectome.dimorphic_and_dn_effectors",
+                organ="AN_DN_VNC",
+                port=BiologicalPort.PORT1_ACH,
+                selected=[
+                    k
+                    for k, v in (
+                        ("male_P1_courtship", readout.male_p1_courtship_rate),
+                        ("male_pIP10_song", readout.male_pip10_song_rate),
+                        ("female_pC1_receptivity", readout.female_pc1_receptivity_rate),
+                        ("female_ovi_uterus", readout.female_ovi_oviposition_rate),
+                        ("DN_walking", dn_clusters["walking"]),
+                    )
+                    if v > 0.10
+                ],
+                potentials=[
+                    {"id": "male_P1", "score": readout.male_p1_courtship_rate},
+                    {"id": "male_pIP10", "score": readout.male_pip10_song_rate},
+                    {"id": "female_pC1", "score": readout.female_pc1_receptivity_rate},
+                    {"id": "female_ovi", "score": readout.female_ovi_oviposition_rate},
+                ],
+            )
+            if readout.male_pip10_song_rate > 0.15 and self.dsx_isoform == "DsxM":
+                out_c = ImpulseOutcome.MALE_COURTSHIP_SONG
+            elif readout.male_pip10_song_rate > 0.15 and self.dsx_isoform == "DsxF":
+                out_c = ImpulseOutcome.FEMALE_FRUM_COURTSHIP_SONG
+            elif readout.female_ovi_oviposition_rate > 0.15:
+                out_c = ImpulseOutcome.FEMALE_OVIPOSITION
+            elif readout.female_pc1_receptivity_rate > 0.15:
+                out_c = ImpulseOutcome.FEMALE_SONG_RECEPTIVITY
+            else:
+                out_c = ImpulseOutcome.FORWARD_RUN
+            imp.finish(outcome=out_c)
+
+        return readout
