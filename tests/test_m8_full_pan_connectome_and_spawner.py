@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import pytest
 import pyarrow.feather  # noqa: F401 - import before torch on Windows
 
@@ -186,3 +187,19 @@ def test_multimodal_courtship_threshold_motor_decode_and_plasticity() -> None:
     sleep_res = fly_multi.step_sleep_consolidation(dcreb2b_blocked=False)
     assert sleep_res["glial_atp_pool"] > 0.90
     assert sleep_res["sleep_debt"] < 0.05
+
+
+@pytest.mark.skipif(not PAN_CONNECTOME_PATH.is_file(), reason="Compiled 189,766-cell pan-connectome not on disk")
+def test_multigenerational_colony_ontogeny_egg_larva_pupa_adult_and_3d_viewer(tmp_path: Path) -> None:
+    """5. Verify complete colony ontogeny: Mating -> Oviposition (F1 Egg) -> Hatching (Wave 1 Larva) -> 20E Pupa -> Adult Eclosion."""
+    from fly_nca.app.viewer3d import export_colony_3d_viewer_html
+
+    out_html = tmp_path / "colony_3d_viewer.html"
+    res = export_colony_3d_viewer_html(output_path=out_html, n_founders=2, frames=14, seed=108)
+    assert out_html.is_file()
+    assert res["n_final_colony"] >= 3
+    event_types = [ev["event"] for ev in res["events"]]
+    assert "OVIPOSITION_EGG_LAID" in event_types
+    assert "HATCH_EGG_TO_LARVA" in event_types
+    assert "PUPARIATION_20E_PULSE" in event_types
+    assert "ADULT_ECLOSION_189766_CELLS" in event_types

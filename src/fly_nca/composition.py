@@ -59,6 +59,7 @@ class FlyNCAComposition(nn.Module):
         self,
         genome: FlyGenome | None = None,
         sex: str = "F",
+        stage: str = "adult",
         frazzled_state: str = "wt",
         device: torch.device | str = "cpu",
         dtype: torch.dtype = torch.float32,
@@ -69,7 +70,7 @@ class FlyNCAComposition(nn.Module):
         self.genome = genome or FlyGenome()
         self.developed = develop_fly_from_genome(
             self.genome,
-            stage="adult",
+            stage="larva" if stage == "larva" else "adult",
             sex="M" if sex == "M" else "F",
             scale=0.05,
             frazzled_state=frazzled_state,

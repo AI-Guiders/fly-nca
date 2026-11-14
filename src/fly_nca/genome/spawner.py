@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from fly_nca.composition import FlyFrameTelemetry, FlyNCAComposition
 
 SocialBehaviorLabel = Literal[
+    "EGG_SYNCYTIUM_BLASTODERM",
+    "LARVA_WAVE1_CRAWLING",
+    "PUPA_20E_METAMORPHOSIS",
     "FORAGING_ROVER",
     "FORAGING_SITTER",
     "FEEDING_PER",
@@ -38,6 +41,8 @@ SocialBehaviorLabel = Literal[
     "ESCAPE_JUMP_GF",
     "SLEEP",
 ]
+
+LifeStage = Literal["egg", "larva", "pupa", "adult"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +65,9 @@ class IndividualFlyGenome:
     courtship_vigor_scale: float
     initial_sugar_level: float
     initial_amino_level: float
+    generation: int = 0
+    maternal_id: str | None = None
+    paternal_id: str | None = None
 
     def is_valid(self) -> bool:
         """Verify that X:A -> Sxl -> Tra -> Dsx/Fru cascade and allelic parameters are physiologically valid."""
@@ -85,12 +93,20 @@ class IndividualFlyGenome:
 
 @dataclass
 class SpawnedFly:
-    """A living individual fly combining its IndividualFlyGenome, 189,766-cell Pan-Connectome, and 3D Body."""
+    """A living individual fly across its ontogenetic lifecycle (egg -> larva -> pupa -> 189,766-cell adult)."""
 
     genome: IndividualFlyGenome
     full_connectome: FullConnectomeFlyNCA
     composition: FlyNCAComposition
     arena: FastTensorArena3D
+    life_stage: LifeStage = "adult"
+    stage_progress: float = 1.0           # [0..1] progress through current developmental stage
+    larval_mass_mg: float = 1.20          # Critical weight ~1.0 mg triggers 20E ecdysone pupariation pulse!
+    pupal_hapf: float = 48.0              # Hours after puparium formation (0 -> 6 -> 24 -> 36 -> 48 h.a.p.f.)
+    ecdysone_20e_titer: float = 0.0       # Steroid hormone 20-hydroxyecdysone titer [0..1]
+    is_mated: bool = False
+    mate_genome: IndividualFlyGenome | None = None
+    eggs_laid: int = 0
     last_connectome_readout: FullConnectomeReadout | None = None
     last_telemetry: FlyFrameTelemetry | None = None
     current_behavior: SocialBehaviorLabel = "FORAGING_ROVER"
@@ -166,6 +182,63 @@ class FlySpawner:
         assert genome.is_valid()
         return genome
 
+    def recombine_genomes(
+        self,
+        maternal: IndividualFlyGenome,
+        paternal: IndividualFlyGenome,
+        *,
+        sex: Literal["F", "M"] | None = None,
+    ) -> IndividualFlyGenome:
+        """Mendelian + polygenic recombination of maternal and paternal Drosophila genomes (F1..Fn generation)."""
+        self.spawn_counter += 1
+        chosen_sex: Literal["F", "M"] = sex if sex in ("F", "M") else ("F" if self.rng.random() < 0.5 else "M")
+        x_to_a = 1.0 if chosen_sex == "F" else 0.5
+        sxl_on = x_to_a >= 0.95
+        tra_on = sxl_on
+        dsx_iso: Literal["DsxF", "DsxM"] = "DsxF" if tra_on else "DsxM"
+        fru_m_on = not tra_on
+
+        # Mendelian inheritance at foraging locus (oskar/foraging: rover vs sitter)
+        chosen_for: Literal["rover", "sitter"] = (
+            maternal.foraging_allele if self.rng.random() < 0.5 else paternal.foraging_allele
+        )
+        gen_num = max(maternal.generation, paternal.generation) + 1
+
+        def _blend(a: float, b: float, lo: float, hi: float) -> float:
+            w = self.rng.uniform(0.25, 0.75)
+            mut = self.rng.gauss(0.0, 0.025)
+            return round(max(lo, min(hi, w * a + (1.0 - w) * b + mut)), 4)
+
+        loco_base = _blend(maternal.foraging_locomotion_gain, paternal.foraging_locomotion_gain, 0.70, 1.35)
+        if chosen_for == "rover":
+            loco_base = max(1.05, loco_base)
+        else:
+            loco_base = min(0.96, loco_base)
+
+        genome = IndividualFlyGenome(
+            fly_id=f"fly_{self.spawn_counter:03d}_G{gen_num}_{chosen_sex}_{chosen_for}",
+            sex=chosen_sex,
+            x_to_autosome_ratio=x_to_a,
+            sxl_active=sxl_on,
+            tra_active=tra_on,
+            dsx_isoform=dsx_iso,
+            fru_m_active=fru_m_on,
+            foraging_allele=chosen_for,
+            foraging_locomotion_gain=round(loco_base, 4),
+            dopr1_learning_scale=_blend(maternal.dopr1_learning_scale, paternal.dopr1_learning_scale, 0.70, 1.35),
+            oaa2r_brake_scale=_blend(maternal.oaa2r_brake_scale, paternal.oaa2r_brake_scale, 0.55, 1.45),
+            shakb_gap_scale=_blend(maternal.shakb_gap_scale, paternal.shakb_gap_scale, 0.75, 1.25),
+            snpfr_hunger_scale=_blend(maternal.snpfr_hunger_scale, paternal.snpfr_hunger_scale, 0.70, 1.35),
+            courtship_vigor_scale=_blend(maternal.courtship_vigor_scale, paternal.courtship_vigor_scale, 0.70, 1.35),
+            initial_sugar_level=0.65,
+            initial_amino_level=0.65,
+            generation=gen_num,
+            maternal_id=maternal.fly_id,
+            paternal_id=paternal.fly_id,
+        )
+        assert genome.is_valid()
+        return genome
+
     def spawn_fly(
         self,
         sex: Literal["F", "M"] | None = None,
@@ -174,11 +247,13 @@ class FlySpawner:
         yaw_rad: float | None = None,
         *,
         fru_m_override: bool | None = None,
+        life_stage: LifeStage = "adult",
+        genome_override: IndividualFlyGenome | None = None,
     ) -> SpawnedFly:
-        """Spawn one complete 189,766-cell living fly from a valid genome."""
+        """Spawn one complete living fly (at stage 'egg', 'larva', 'pupa', or 'adult') from a valid genome."""
         from fly_nca.composition import FlyNCAComposition
 
-        ind_genome = self.sample_valid_genome(
+        ind_genome = genome_override or self.sample_valid_genome(
             sex=sex,
             foraging_allele=foraging_allele,
             fru_m_override=fru_m_override,
@@ -197,6 +272,7 @@ class FlySpawner:
         )
         comp = FlyNCAComposition(
             genome=FlyGenome(),
+            stage="larva" if life_stage in ("egg", "larva") else "adult",
             sex=ind_genome.sex,
             device=self.device,
         )
@@ -217,12 +293,29 @@ class FlySpawner:
         arena.thorax_rpy[2] = float(init_yaw)
         comp.central_complex.seed_heading(float(init_yaw))
 
+        if life_stage == "egg":
+            beh: SocialBehaviorLabel = "EGG_SYNCYTIUM_BLASTODERM"
+            prog, mass, hapf = 0.0, 0.15, 0.0
+        elif life_stage == "larva":
+            beh = "LARVA_WAVE1_CRAWLING"
+            prog, mass, hapf = 0.0, 0.45, 0.0
+        elif life_stage == "pupa":
+            beh = "PUPA_20E_METAMORPHOSIS"
+            prog, mass, hapf = 0.0, 1.20, 6.0
+        else:
+            beh = "FORAGING_ROVER" if ind_genome.foraging_allele == "rover" else "FORAGING_SITTER"
+            prog, mass, hapf = 1.0, 1.20, 48.0
+
         return SpawnedFly(
             genome=ind_genome,
             full_connectome=full_conn,
             composition=comp,
             arena=arena,
-            current_behavior="FORAGING_ROVER" if ind_genome.foraging_allele == "rover" else "FORAGING_SITTER",
+            life_stage=life_stage,
+            stage_progress=prog,
+            larval_mass_mg=mass,
+            pupal_hapf=hapf,
+            current_behavior=beh,
         )
 
     def spawn_population(
@@ -247,12 +340,15 @@ class FlySpawner:
 
 @dataclass
 class MultiFlySocialArena3D:
-    """Shared 3D arena hosting multiple spawned male & female 189,766-cell flies."""
+    """Shared 3D arena hosting a multi-generational Drosophila colony (egg -> larva -> pupa -> adult)."""
 
     flies: list[SpawnedFly]
     shared_plumes: list[OdorPlume3D] = field(default_factory=list)
     wind_world_xyz: tuple[float, float, float] = (0.12, 0.0, 0.0)
     time_ms: float = 0.0
+    spawner: FlySpawner | None = None
+    max_colony_size: int = 24
+    colony_events: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.shared_plumes:
@@ -267,25 +363,110 @@ class MultiFlySocialArena3D:
                     is_yeast_protein=True,
                 )
             )
+        if self.spawner is None and self.flies:
+            self.spawner = FlySpawner(seed=108, device=self.flies[0].arena.pos_xyz.device)
 
-    def step_population(self, frames: int = 1) -> list[dict[str, Any]]:
-        """Advance all spawned flies by `frames` cognitive frames (4.038 ms each) with social & sensory coupling."""
+    def step_population(self, frames: int = 1, *, enable_ontogeny_and_reproduction: bool = False) -> list[dict[str, Any]]:
+        """Advance all organisms by `frames` cognitive frames (4.038 ms each) with social & ontogenetic coupling."""
+        from fly_nca.genome.morphogenesis import develop_fly_from_genome
+
         snapshots: list[dict[str, Any]] = []
         for _ in range(max(1, int(frames))):
             self.time_ms += 4.038
             snapshots = []
-            n = len(self.flies)
+            new_offspring: list[SpawnedFly] = []
 
             for i, f_i in enumerate(self.flies):
                 f_i.arena.plumes = list(self.shared_plumes)
                 f_i.arena.wind_world_xyz = self.wind_world_xyz
+                xi, yi, zi = f_i.pos_xyz
+                dist_to_cup = math.hypot(xi, yi)
+                on_yeast_cup = dist_to_cup < 0.008
 
-                # Find closest conspecific neighbor j != i in 3D space
+                # --- Ontogenetic Stages L0-L1: EGG -> LARVA (Wave 1) -> PUPA (20E Wave 2) -> ADULT ---
+                if f_i.life_stage == "egg":
+                    f_i.stage_progress = min(1.0, f_i.stage_progress + 0.35)
+                    f_i.current_behavior = "EGG_SYNCYTIUM_BLASTODERM"
+                    if f_i.stage_progress >= 1.0:
+                        _ = f_i.composition.genome.run_syncytial_embryogenesis_nca(n_positions=64)
+                        f_i.life_stage = "larva"
+                        f_i.stage_progress = 0.0
+                        f_i.larval_mass_mg = 0.35
+                        f_i.current_behavior = "LARVA_WAVE1_CRAWLING"
+                        self.colony_events.append(
+                            {"time_ms": round(self.time_ms, 2), "event": "HATCH_EGG_TO_LARVA", "fly_id": f_i.genome.fly_id}
+                        )
+                    snapshots.append(self._build_snapshot(f_i, n_active=64))
+                    continue
+
+                if f_i.life_stage == "larva":
+                    # Crawling Wave 1 larva (~3,016 primary cells, zero neck bottleneck): chemotaxis toward yeast cup
+                    dx, dy = -xi, -yi
+                    d_norm = math.hypot(dx, dy) + 1e-6
+                    step_m = 0.0004 * f_i.genome.foraging_locomotion_gain
+                    if d_norm > 0.002:
+                        f_i.arena.pos_xyz[0] += step_m * (dx / d_norm)
+                        f_i.arena.pos_xyz[1] += step_m * (dy / d_norm)
+                    feed_gain = 0.30 if dist_to_cup < 0.010 else 0.15
+                    f_i.larval_mass_mg = round(f_i.larval_mass_mg + feed_gain, 4)
+                    f_i.stage_progress = min(1.0, f_i.larval_mass_mg / 1.05)
+                    f_i.current_behavior = "LARVA_WAVE1_CRAWLING"
+                    if f_i.larval_mass_mg >= 1.05:
+                        # Critical weight triggers prothoracic gland 20-hydroxyecdysone (20E) steroid pulse -> pupariation!
+                        f_i.ecdysone_20e_titer = 1.0
+                        f_i.life_stage = "pupa"
+                        f_i.pupal_hapf = 6.0
+                        f_i.stage_progress = 0.125
+                        f_i.current_behavior = "PUPA_20E_METAMORPHOSIS"
+                        self.colony_events.append(
+                            {
+                                "time_ms": round(self.time_ms, 2),
+                                "event": "PUPARIATION_20E_PULSE",
+                                "fly_id": f_i.genome.fly_id,
+                                "larval_mass_mg": f_i.larval_mass_mg,
+                            }
+                        )
+                    snapshots.append(self._build_snapshot(f_i, n_active=f_i.composition.developed.n_wave1_primary))
+                    continue
+
+                if f_i.life_stage == "pupa":
+                    # Meng et al. (2026) Nature pupal stages: 6 -> 24 -> 36 -> 48 h.a.p.f.
+                    # Wave 1 pruning + Wave 2 (dati+) secondary neurogenesis & CAM (DIP/Dpr + Beat/Side) tract wiring
+                    f_i.pupal_hapf = min(48.0, f_i.pupal_hapf + 14.0)
+                    f_i.stage_progress = min(1.0, f_i.pupal_hapf / 48.0)
+                    f_i.ecdysone_20e_titer = round(max(0.1, 1.0 - 0.5 * f_i.stage_progress), 3)
+                    f_i.current_behavior = "PUPA_20E_METAMORPHOSIS"
+                    if f_i.pupal_hapf >= 48.0:
+                        f_i.composition.developed = develop_fly_from_genome(
+                            f_i.composition.genome,
+                            stage="adult",
+                            sex=f_i.genome.sex,
+                            scale=0.02,
+                            device=f_i.arena.pos_xyz.device,
+                        )
+                        f_i.life_stage = "adult"
+                        f_i.stage_progress = 1.0
+                        f_i.ecdysone_20e_titer = 0.0
+                        f_i.current_behavior = (
+                            "FORAGING_ROVER" if f_i.genome.foraging_allele == "rover" else "FORAGING_SITTER"
+                        )
+                        self.colony_events.append(
+                            {
+                                "time_ms": round(self.time_ms, 2),
+                                "event": "ADULT_ECLOSION_189766_CELLS",
+                                "fly_id": f_i.genome.fly_id,
+                                "sex": f_i.genome.sex,
+                                "generation": f_i.genome.generation,
+                            }
+                        )
+                    snapshots.append(self._build_snapshot(f_i, n_active=f_i.composition.developed.n_cells))
+                    continue
+
+                # --- Adult Imago (189,766 cells, 6,853,423 5-port synaptic edges) ---
                 nearest_dist = 999.0
                 nearest_j: SpawnedFly | None = None
-                xi, yi, zi = f_i.pos_xyz
                 for j, f_j in enumerate(self.flies):
-                    if i == j:
+                    if i == j or f_j.life_stage != "adult":
                         continue
                     xj, yj, zj = f_j.pos_xyz
                     d = math.sqrt((xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2)
@@ -323,8 +504,6 @@ class MultiFlySocialArena3D:
                     sensor.small_target_salience = max(float(sensor.small_target_salience), 0.75)
 
                 hunger = max(0.0, 1.0 - f_i.composition.hemolymph.sugar_level)
-                dist_to_cup = math.hypot(xi, yi)
-                on_yeast_cup = dist_to_cup < 0.008
 
                 conn_out = f_i.full_connectome.step_full_connectome(
                     sensor,
@@ -373,9 +552,15 @@ class MultiFlySocialArena3D:
                     if conn_out.female_pc1_receptivity_rate > 0.15 and song_heard > 0.1:
                         f_i.receptivity_score = round(conn_out.female_pc1_receptivity_rate, 4)
                         f_i.current_behavior = "FEMALE_SONG_RECEPTIVITY"
+                        if nearest_j is not None and nearest_j.genome.sex == "M":
+                            f_i.is_mated = True
+                            f_i.mate_genome = nearest_j.genome
                     elif conn_out.female_ovi_oviposition_rate > 0.15 and on_yeast_cup:
                         f_i.oviposition_active = True
                         f_i.current_behavior = "FEMALE_OVIPOSITION"
+                        if nearest_j is not None and nearest_j.genome.sex == "M":
+                            f_i.is_mated = True
+                            f_i.mate_genome = nearest_j.genome
                     elif telem.motor.proboscis_per > 0.5:
                         f_i.current_behavior = "FEEDING_PER"
                     else:
@@ -383,26 +568,80 @@ class MultiFlySocialArena3D:
                             "FORAGING_ROVER" if f_i.genome.foraging_allele == "rover" else "FORAGING_SITTER"
                         )
 
-                snapshots.append(
-                    {
-                        "fly_id": f_i.genome.fly_id,
-                        "sex": f_i.genome.sex,
-                        "x_to_a": f_i.genome.x_to_autosome_ratio,
-                        "sxl_tra": f_i.genome.tra_active,
-                        "dsx": f_i.genome.dsx_isoform,
-                        "fru_m": f_i.genome.fru_m_active,
-                        "foraging_allele": f_i.genome.foraging_allele,
-                        "pos_xyz": [round(c, 5) for c in f_i.pos_xyz],
-                        "behavior": f_i.current_behavior,
-                        "n_active_cells_189k": conn_out.n_active_cells,
-                        "wing_song_active": f_i.wing_song_active,
-                        "boxing_intensity": f_i.boxing_intensity,
-                        "receptivity_score": f_i.receptivity_score,
-                        "oviposition_active": f_i.oviposition_active,
-                        "male_p1_rate": conn_out.male_p1_courtship_rate,
-                        "male_pip10_rate": conn_out.male_pip10_song_rate,
-                        "female_pc1_rate": conn_out.female_pc1_receptivity_rate,
-                        "female_ovi_rate": conn_out.female_ovi_oviposition_rate,
-                    }
-                )
+                    # When a mated/courted female activates oviposition (or receptivity + oviDN on yeast cup), lay fertilized F1 egg!
+                    if (
+                        enable_ontogeny_and_reproduction
+                        and f_i.eggs_laid == 0
+                        and on_yeast_cup
+                        and conn_out.female_ovi_oviposition_rate > 0.12
+                        and (f_i.is_mated or (nearest_j is not None and nearest_j.genome.sex == "M"))
+                        and (len(self.flies) + len(new_offspring) < self.max_colony_size)
+                        and self.spawner is not None
+                    ):
+                        pat_genome = f_i.mate_genome or (
+                            nearest_j.genome if nearest_j is not None else f_i.genome
+                        )
+                        child_genome = self.spawner.recombine_genomes(f_i.genome, pat_genome)
+                        egg_pos = (
+                            round(xi + self.spawner.rng.uniform(-0.0015, 0.0015), 5),
+                            round(yi + self.spawner.rng.uniform(-0.0015, 0.0015), 5),
+                            0.0,
+                        )
+                        egg_fly = self.spawner.spawn_fly(
+                            pos_xyz=egg_pos,
+                            life_stage="egg",
+                            genome_override=child_genome,
+                        )
+                        new_offspring.append(egg_fly)
+                        f_i.eggs_laid += 1
+                        self.colony_events.append(
+                            {
+                                "time_ms": round(self.time_ms, 2),
+                                "event": "OVIPOSITION_EGG_LAID",
+                                "mother_id": f_i.genome.fly_id,
+                                "father_id": pat_genome.fly_id,
+                                "egg_id": child_genome.fly_id,
+                                "sex": child_genome.sex,
+                                "generation": child_genome.generation,
+                            }
+                        )
+
+                snapshots.append(self._build_snapshot(f_i, n_active=conn_out.n_active_cells, conn_out=conn_out))
+
+            if new_offspring:
+                self.flies.extend(new_offspring)
+
         return snapshots
+
+    @staticmethod
+    def _build_snapshot(
+        f_i: SpawnedFly,
+        *,
+        n_active: int,
+        conn_out: FullConnectomeReadout | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "fly_id": f_i.genome.fly_id,
+            "generation": f_i.genome.generation,
+            "life_stage": f_i.life_stage,
+            "stage_progress": round(f_i.stage_progress, 3),
+            "larval_mass_mg": round(f_i.larval_mass_mg, 3),
+            "pupal_hapf": round(f_i.pupal_hapf, 1),
+            "sex": f_i.genome.sex,
+            "x_to_a": f_i.genome.x_to_autosome_ratio,
+            "sxl_tra": f_i.genome.tra_active,
+            "dsx": f_i.genome.dsx_isoform,
+            "fru_m": f_i.genome.fru_m_active,
+            "foraging_allele": f_i.genome.foraging_allele,
+            "pos_xyz": [round(c, 5) for c in f_i.pos_xyz],
+            "behavior": f_i.current_behavior,
+            "n_active_cells_189k": n_active,
+            "wing_song_active": f_i.wing_song_active,
+            "boxing_intensity": f_i.boxing_intensity,
+            "receptivity_score": f_i.receptivity_score,
+            "oviposition_active": f_i.oviposition_active,
+            "male_p1_rate": conn_out.male_p1_courtship_rate if conn_out is not None else 0.0,
+            "male_pip10_rate": conn_out.male_pip10_song_rate if conn_out is not None else 0.0,
+            "female_pc1_rate": conn_out.female_pc1_receptivity_rate if conn_out is not None else 0.0,
+            "female_ovi_rate": conn_out.female_ovi_oviposition_rate if conn_out is not None else 0.0,
+        }

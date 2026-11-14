@@ -83,6 +83,22 @@ def cmd_spawn(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_colony3d(args: argparse.Namespace) -> int:
+    from fly_nca.app.viewer3d import export_colony_3d_viewer_html
+
+    if args.device == "cuda" and not torch.cuda.is_available():
+        args.device = "cpu"
+    res = export_colony_3d_viewer_html(
+        output_path=args.out,
+        n_founders=args.founders,
+        frames=args.frames,
+        seed=args.seed,
+        device=args.device,
+    )
+    print(json.dumps(res, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Fly-NCA Configurable Wet-Lab Bench")
     sub = p.add_subparsers(dest="command", required=True)
@@ -113,6 +129,14 @@ def build_parser() -> argparse.ArgumentParser:
     spawn_p.add_argument("--json", action="store_true")
     spawn_p.add_argument("--json-out", type=str, default=None)
     spawn_p.set_defaults(func=cmd_spawn)
+
+    col_p = sub.add_parser("colony3d", help="Run multi-generational 3D colony (Egg->Larva->Pupa->Adult) & export WebGL 3D viewer")
+    col_p.add_argument("--founders", type=int, default=4)
+    col_p.add_argument("--frames", type=int, default=16)
+    col_p.add_argument("--seed", type=int, default=108)
+    col_p.add_argument("--out", type=str, default="colony_3d_viewer.html")
+    col_p.add_argument("--device", default=_device_default())
+    col_p.set_defaults(func=cmd_colony3d)
 
     return p
 
