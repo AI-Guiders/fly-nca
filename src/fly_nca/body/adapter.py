@@ -45,7 +45,7 @@ class MotorOut:
 
 @dataclass
 class SensorIn:
-    """Typed sensory periphery input from 4D body to OL / AL / AMMC / SEZ / VNC (16,563 BANC sensors)."""
+    """Typed sensory periphery input from 3D body to OL / AL / AMMC / SEZ / VNC (16,563 BANC sensors)."""
 
     # Vision (892 hex columns x 2 eyes or canonical spherical projection)
     ommatidia_light: torch.Tensor      # [892] Hex ommatidia luminance/contrast
@@ -75,7 +75,7 @@ class SensorIn:
 
 
 class FlyBodyAdapter(Protocol):
-    """Client-agnostic hardware contract between Fly-NCA and any 4D physics engine."""
+    """Client-agnostic hardware contract between Fly-NCA and any 3D physics engine."""
 
     def step_physics(self, motor: MotorOut, dt_ms: float = 1.0) -> SensorIn:
         ...

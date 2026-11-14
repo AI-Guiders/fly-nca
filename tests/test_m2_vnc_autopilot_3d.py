@@ -1,16 +1,16 @@
-"""Milestone M2 Verification: 4D Body Physics & VNC-NCA 200-Hz Autopilots (Flight ESP, Neck Gimbal, 6 Leg Loops, GF Escape)."""
+"""Milestone M2 Verification: 3D Body Physics & VNC-NCA 200-Hz Autopilots (Flight ESP, Neck Gimbal, 6 Leg Loops, GF Escape)."""
 
 from __future__ import annotations
 
 import torch
 
-from fly_nca.body import FastTensorArena4D, MotorOut
+from fly_nca.body import FastTensorArena3D, MotorOut
 from fly_nca.organs import DescendingJoystickDN, VNCAutopilotNCA
 
 
 def test_decapitated_fly_standing_and_bristle_grooming_reflex() -> None:
     """1. Decapitated fly (DN = 0): stands on 6 legs and grooms dust off bristles autonomously via VNC loops."""
-    arena = FastTensorArena4D()
+    arena = FastTensorArena3D()
     vnc = VNCAutopilotNCA()
 
     # Deposit dust on bristles while brain descending commands are zero (decapitated state)
@@ -32,8 +32,8 @@ def test_decapitated_fly_standing_and_bristle_grooming_reflex() -> None:
 
 def test_autopilot_1_and_2_flight_esp_and_neck_3d_gimbal_stabilization() -> None:
     """2. Airborne fly under strong roll/pitch wind gust stabilizes attitude via haltere GapJ ESP & Neck Gimbal."""
-    arena_with_esp = FastTensorArena4D()
-    arena_no_esp = FastTensorArena4D()
+    arena_with_esp = FastTensorArena3D()
+    arena_no_esp = FastTensorArena3D()
     vnc = VNCAutopilotNCA()
 
     # Place fly in mid-air (z = 0.05 m) with an initial 0.25 rad bank angle + lateral roll turbulence
@@ -67,7 +67,7 @@ def test_autopilot_1_and_2_flight_esp_and_neck_3d_gimbal_stabilization() -> None
 def test_autopilot_3_forward_walk_moonwalker_mdn_reverse_and_lbl40_ablation() -> None:
     """3. Forward walking (DNp09), Moonwalker (MDN) backward walking, and LBL40 T3 ablation (Nat Commun 2020)."""
     # A. Forward walking via DNp09
-    arena_fwd = FastTensorArena4D()
+    arena_fwd = FastTensorArena3D()
     vnc_fwd = VNCAutopilotNCA()
     s_fwd = arena_fwd.step_physics(MotorOut.zeros(), dt_ms=1.0)
     for _ in range(80):
@@ -76,7 +76,7 @@ def test_autopilot_3_forward_walk_moonwalker_mdn_reverse_and_lbl40_ablation() ->
     assert float(arena_fwd.pos_xyz[0].item()) > 0.0002  # Moved forward (+x)
 
     # B. Moonwalker (MDN) backward walking via Port 2 shunt inversion
-    arena_bwd = FastTensorArena4D()
+    arena_bwd = FastTensorArena3D()
     vnc_bwd = VNCAutopilotNCA()
     s_bwd = arena_bwd.step_physics(MotorOut.zeros(), dt_ms=1.0)
     for _ in range(80):
@@ -96,9 +96,9 @@ def test_autopilot_3_forward_walk_moonwalker_mdn_reverse_and_lbl40_ablation() ->
 
 def test_giant_fiber_gap_junction_escape_latency_and_frazzled_rescue() -> None:
     """4. eNeuro 2025: GF -> TTMn electrical synapse triggers takeoff in <=2 ms (wt/ICD rescue) vs delayed in frazzled LOF."""
-    arena_wt = FastTensorArena4D()
-    arena_lof = FastTensorArena4D()
-    arena_icd = FastTensorArena4D()
+    arena_wt = FastTensorArena3D()
+    arena_lof = FastTensorArena3D()
+    arena_icd = FastTensorArena3D()
 
     vnc_wt = VNCAutopilotNCA(frazzled_state="wt")
     vnc_lof = VNCAutopilotNCA(frazzled_state="lof")
@@ -126,6 +126,6 @@ def test_giant_fiber_gap_junction_escape_latency_and_frazzled_rescue() -> None:
     assert m_icd2.jump_ttmn_burst >= m_wt2.jump_ttmn_burst  # Frazzled ICD rescue restores full fast response
     assert m_lof2.jump_ttmn_burst < 0.25  # Frazzled LOF (5.31% GJ volume) fails 2-ms threshold!
 
-    # Apply jump burst to 4D arena -> verify immediate vertical liftoff into 3D air (z > 0)
+    # Apply jump burst to 3D arena -> verify immediate vertical liftoff into 3D air (z > 0)
     arena_wt.step_physics(m_wt2, dt_ms=1.0)
     assert float(arena_wt.pos_xyz[2].item()) > 0.001

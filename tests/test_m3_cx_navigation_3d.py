@@ -5,14 +5,14 @@ from __future__ import annotations
 import math
 import torch
 
-from fly_nca.body import FastTensorArena4D, MotorOut, OdorPlume3D
+from fly_nca.body import FastTensorArena3D, MotorOut, OdorPlume3D
 from fly_nca.composition import FlyNCAComposition
 from fly_nca.organs import CentralComplexNCA, OpticLobeNCA
 
 
 def test_eb_ring_attractor_holds_heading_in_complete_darkness_and_tracks_turns() -> None:
     """1. EB 16-wedge ring attractor holds heading in complete darkness and shifts phase via PB PEN on yaw turns."""
-    arena = FastTensorArena4D()
+    arena = FastTensorArena3D()
     ol = OpticLobeNCA()
     cx = CentralComplexNCA()
 
@@ -32,7 +32,7 @@ def test_eb_ring_attractor_holds_heading_in_complete_darkness_and_tracks_turns()
 
 def test_fb_hdeltak21_persistent_goal_bump_5_to_10s_and_gtacr1_causality() -> None:
     """2. Nat Commun 2026: hDeltaK21 FB bump ramps with odor pulses, persists 5-10 s after odor OFF (GOAL -> SEARCH), and is abolished by GtACR1."""
-    arena = FastTensorArena4D()
+    arena = FastTensorArena3D()
     ol = OpticLobeNCA()
     cx = CentralComplexNCA()
     cx.seed_heading(0.0)
@@ -67,8 +67,8 @@ def test_fb_hdeltak21_persistent_goal_bump_5_to_10s_and_gtacr1_causality() -> No
 
 
 def test_closed_loop_3d_flight_and_walking_navigation_to_xyz_goal() -> None:
-    """3. End-to-end closed-loop navigation: fly steers and climbs in 4D space toward an attractive 3D goal (x, y, z)."""
-    arena = FastTensorArena4D()
+    """3. End-to-end closed-loop navigation: fly steers and climbs in 3D space toward an attractive 3D goal (x, y, z)."""
+    arena = FastTensorArena3D()
     fly = FlyNCAComposition()
 
     # Start fly facing -45 deg, while attractive yeast plume (glomerulus 0) and wind cue point toward (+0.10, +0.05, +0.02)

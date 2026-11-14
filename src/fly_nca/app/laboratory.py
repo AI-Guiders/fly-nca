@@ -7,7 +7,7 @@ from enum import Enum
 
 
 class LaboratoryPreset(str, Enum):
-    """Canonical wet-lab experimental apparatuses reproduced in FastTensorArena4D."""
+    """Canonical wet-lab experimental apparatuses reproduced in FastTensorArena3D."""
 
     T_MAZE_PAVLOVIAN_TUBE = "t_maze_pavlovian_tube"
     COPPER_GRID_CONTEXT_T_MAZE = "copper_grid_context_t_maze"
@@ -64,7 +64,7 @@ LABORATORY_RIGS: dict[LaboratoryPreset, LaboratoryRigSpec] = {
             "ambient light color."
         ),
         arena_mapping=(
-            "FastTensorArena4D with surface_texture_freq=1.0 (copper grid present) vs 2.5 (grid absent/changed), "
+            "FastTensorArena3D with surface_texture_freq=1.0 (copper grid present) vs 2.5 (grid absent/changed), "
             "temperature_c=23.0 vs 32.0, ommatidia_light ON vs OFF, and LHSpinGateNCA 4-branch GluCla conjunction gate."
         ),
     ),
@@ -82,7 +82,7 @@ LABORATORY_RIGS: dict[LaboratoryPreset, LaboratoryRigSpec] = {
             "50 Hz Basler IR tracking (850 nm), and 470 nm LED panel (61 µW/mm²) for VT062617 > UAS-GtACR1 silencing."
         ),
         arena_mapping=(
-            "FastTensorArena4D wind_world_xyz=(0.12, 0.0, 0.0) m/s (12 cm/s laminar wind), ACV OdorPlume3D pulses "
+            "FastTensorArena3D wind_world_xyz=(0.12, 0.0, 0.0) m/s (12 cm/s laminar wind), ACV OdorPlume3D pulses "
             "(glomerulus 0), CentralComplexNCA cells 16..31 (VT062617 / hΔK21 with tau_persist=7500 ms), and gtacr1_inhibit_fb_goal flag."
         ),
     ),
@@ -168,7 +168,7 @@ LABORATORY_RIGS: dict[LaboratoryPreset, LaboratoryRigSpec] = {
             "(sensitizes Ir76b yeast GRNs and activates DA-WED -> FB-LAL DopR2 protein seeking while inhibiting PLP DopR1 sugar intake)."
         ),
         arena_mapping=(
-            "AntennalSEZNCA + HemolymphState(sugar_level, amino_acid_level) + FastTensorArena4D crop_stretch visceral stop loop."
+            "AntennalSEZNCA + HemolymphState(sugar_level, amino_acid_level) + FastTensorArena3D crop_stretch visceral stop loop."
         ),
     ),
     LaboratoryPreset.SLEEP_ARC_2P_RIG: LaboratoryRigSpec(

@@ -1,4 +1,4 @@
-"""Full Closed-Loop Composition of NCA-Fly: Genome -> 6 Topological NCA Organs + Glia + 4D Body Arena."""
+"""Full Closed-Loop Composition of NCA-Fly: Genome -> 6 Topological NCA Organs + Glia + 3D Body Arena."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from fly_nca.body import FastTensorArena4D, MotorOut, SensorIn
+from fly_nca.body import FastTensorArena3D, MotorOut, SensorIn
 from fly_nca.core import GlialSubstrateNCA, HemolymphState
 from fly_nca.genome.banc_biophysics import (
     BANC_EMPIRICAL_BIOPHYSICS,
@@ -90,7 +90,7 @@ class FlyNCAComposition(nn.Module):
 
     def step_cognitive_frame(
         self,
-        arena: FastTensorArena4D,
+        arena: FastTensorArena3D,
         target_altitude_z: float = 0.0,
         sleep_need_override: float | None = None,
         creb_intact: bool = True,
@@ -285,7 +285,7 @@ class FlyNCAComposition(nn.Module):
                 proboscis_fdg=chem.fdg_proboscis_cmd,
             )
 
-            # 6. Run 4 fast ticks (4 x 1.0 ms = 4.0 ms) of VNC 200-Hz Autopilot & 4D Arena physics
+            # 6. Run 4 fast ticks (4 x 1.0 ms = 4.0 ms) of VNC 200-Hz Autopilot & 3D Arena physics
             motor = MotorOut.zeros(device=self.device, dtype=self.dtype)
             for _ in range(4):
                 motor, self.last_an_efference = self.vnc_autopilot.step_autopilot(sensor, dn=dn_cmd, dt_ms=1.0)

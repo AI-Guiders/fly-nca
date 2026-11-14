@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 import torch
 
-from fly_nca.body.arena_4d import FastTensorArena4D
+from fly_nca.body.arena_3d import FastTensorArena3D
 from fly_nca.composition import FlyFrameTelemetry, FlyNCAComposition
 from fly_nca.core.cell_state import CH_A, CH_PERSIST, CH_V
 from fly_nca.instruments.catalog import InstrumentId, REGISTRY
@@ -18,7 +18,7 @@ PANEL_SCHEMA: int = 1
 
 def sample_panel(
     fly: FlyNCAComposition,
-    arena: FastTensorArena4D,
+    arena: FastTensorArena3D,
     *,
     last_telem: FlyFrameTelemetry | None = None,
     recorder: ImpulseRecorder | None = None,

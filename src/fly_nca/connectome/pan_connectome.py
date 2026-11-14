@@ -565,7 +565,7 @@ class FullConnectomeFlyNCA(nn.Module):
         return readout
 
     def decode_motor_effectors(self) -> MotorOut:
-        """Decode all 1,026 BANC motor & visceral effector neurons directly into a 4D `MotorOut` command."""
+        """Decode all 1,026 BANC motor & visceral effector neurons directly into a 3D `MotorOut` command."""
         leg_drive = torch.zeros((6, 4), device=self.device, dtype=torch.float32)
         tarsus_grip = torch.ones((6,), device=self.device, dtype=torch.float32)
 

@@ -1,4 +1,4 @@
-"""FastTensorArena4D: Analytical 4D Spacetime (x, y, z, t) Physics Engine for Fly-NCA."""
+"""FastTensorArena3D: Analytical 3D Physics & Sensory Arena for Fly-NCA."""
 
 from __future__ import annotations
 
@@ -23,13 +23,13 @@ class OdorPlume3D:
 
 
 @dataclass
-class FastTensorArena4D:
-    """4D spacetime arena (x, y, z, t) with 6x4 leg kinematics, 200-Hz flight aerodynamics, and 3D plumes."""
+class FastTensorArena3D:
+    """3D physics arena (x, y, z) with 6x4 leg kinematics, 200-Hz flight aerodynamics, and 3D plumes."""
 
     device: torch.device | str = "cpu"
     dtype: torch.dtype = torch.float32
 
-    # 4D Spacetime Coordinates: (x, y, z) in meters, time_ms in milliseconds
+    # 3D Spatial Coordinates: (x, y, z) in meters, simulation clock time_ms in milliseconds
     pos_xyz: torch.Tensor = field(init=False)
     vel_xyz: torch.Tensor = field(init=False)
     thorax_rpy: torch.Tensor = field(init=False)       # [3] (roll, pitch, yaw) in radians
@@ -68,7 +68,7 @@ class FastTensorArena4D:
         return self.thorax_rpy + self.neck_rpy
 
     def step_physics(self, motor: MotorOut, dt_ms: float = 1.0) -> SensorIn:
-        """Advance 4D body kinematics, aerodynamics, and sensory fields by dt_ms."""
+        """Advance 3D body kinematics, aerodynamics, and sensory fields by dt_ms."""
         dt_s = float(dt_ms) * 1e-3
         self.time_ms += float(dt_ms)
         dev = self.pos_xyz.device

@@ -23,7 +23,7 @@ from fly_nca.genome.morphogenesis import (
 from fly_nca.genome.spawner import (
     FlySpawner,
     IndividualFlyGenome,
-    MultiFlySocialArena4D,
+    MultiFlySocialArena3D,
     SpawnedFly,
 )
 
@@ -43,6 +43,6 @@ __all__ = [
     "develop_fly_from_genome",
     "FlySpawner",
     "IndividualFlyGenome",
-    "MultiFlySocialArena4D",
+    "MultiFlySocialArena3D",
     "SpawnedFly",
 ]

@@ -1,4 +1,4 @@
-"""Laboratory Instrument Catalog — SSOT of Cellular, Glial, Nervous-Impulse, and 4D Body observables.
+"""Laboratory Instrument Catalog — SSOT of Cellular, Glial, Nervous-Impulse, and 3D Body observables.
 
 Mirrors the `mt-lattice-fluid/mt_ca/instruments/catalog.py` architecture so every instrument has:
 - a stable `InstrumentId` for JSON / CLI / verification suites,
@@ -50,7 +50,7 @@ class InstrumentId(str, Enum):
     IMPULSE_EVENT_COUNT = "impulse_event_count"
     PORT4_SHAKB_ACTIVE = "port4_shakb_active"
 
-    # --- B_body: 4D Kinematic & Behavioral Effector Layer ---
+    # --- B_body: 3D Kinematic & Behavioral Effector Layer ---
     POS_X_M = "pos_x_m"
     POS_Y_M = "pos_y_m"
     POS_Z_M = "pos_z_m"
@@ -280,7 +280,7 @@ REGISTRY: tuple[InstrumentSpec, ...] = (
     InstrumentSpec(
         InstrumentId.POS_X_M,
         "Arena X coordinate",
-        "FastTensorArena4D SI kinematics",
+        "FastTensorArena3D SI kinematics",
         "B_body",
         "m",
         "World-frame X position in meters",
@@ -288,7 +288,7 @@ REGISTRY: tuple[InstrumentSpec, ...] = (
     InstrumentSpec(
         InstrumentId.POS_Y_M,
         "Arena Y coordinate",
-        "FastTensorArena4D SI kinematics",
+        "FastTensorArena3D SI kinematics",
         "B_body",
         "m",
         "World-frame Y position in meters",
@@ -296,7 +296,7 @@ REGISTRY: tuple[InstrumentSpec, ...] = (
     InstrumentSpec(
         InstrumentId.POS_Z_M,
         "Arena Z altitude",
-        "FastTensorArena4D SI kinematics",
+        "FastTensorArena3D SI kinematics",
         "B_body",
         "m",
         "World-frame Z altitude above ground in meters",

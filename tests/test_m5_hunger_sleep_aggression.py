@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from fly_nca.body import FastTensorArena4D, MotorOut
+from fly_nca.body import FastTensorArena3D, MotorOut
 from fly_nca.core import HemolymphState
 from fly_nca.organs import (
     COMP_GAMMA1,
@@ -41,7 +41,7 @@ def test_pd2a1_b1_naive_avoidance_is_soft_prior_gated_by_concentration_time_and_
 
 def test_da_wed_amino_acid_hunger_switch_and_crop_stretch_stop_loop() -> None:
     """2. Open Biol 2019 & BANC: protein deprivation switches preference to yeast (DA-WED), and crop stretch stops feeding."""
-    arena = FastTensorArena4D()
+    arena = FastTensorArena3D()
     al_sez = AntennalSEZNCA()
 
     sensor = arena.step_physics(MotorOut.zeros(), dt_ms=1.0)
@@ -84,7 +84,7 @@ def test_vpm4_autoreceptor_knockdown_escalates_aggression_boxing() -> None:
 
 def test_dfb_sleep_homeostasis_and_creb_ltm_consolidation_from_gamma_to_alpha_beta() -> None:
     """4. Curr Sleep Med Rep 2026: high sleep need triggers dFB Slow-Wave/Active Sleep and CREB transfers gamma1 memory to alpha/beta."""
-    arena = FastTensorArena4D()
+    arena = FastTensorArena3D()
     ol = OpticLobeNCA()
     cx = CentralComplexNCA()
     mb = MushroomBodyNCA(n_kc=1024)

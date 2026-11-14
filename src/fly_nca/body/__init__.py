@@ -1,4 +1,4 @@
-"""L4 4D-Body Contract (FlyBodyAdapter) and FastTensorArena4D Spacetime Engine."""
+"""L4 3D-Body Contract (FlyBodyAdapter) and FastTensorArena3D Physics Engine."""
 
 from fly_nca.body.adapter import (
     JOINT_NAMES,
@@ -7,7 +7,7 @@ from fly_nca.body.adapter import (
     MotorOut,
     SensorIn,
 )
-from fly_nca.body.arena_4d import FastTensorArena4D, OdorPlume3D
+from fly_nca.body.arena_3d import FastTensorArena3D, OdorPlume3D
 
 __all__ = [
     "LEG_NAMES",
@@ -16,5 +16,5 @@ __all__ = [
     "SensorIn",
     "FlyBodyAdapter",
     "OdorPlume3D",
-    "FastTensorArena4D",
+    "FastTensorArena3D",
 ]

@@ -6,7 +6,7 @@ import pytest
 import pyarrow.feather  # noqa: F401 - import before torch on Windows
 
 from fly_nca.connectome import PAN_CONNECTOME_PATH, PanConnectomeSubstrate
-from fly_nca.genome import FlySpawner, MultiFlySocialArena4D
+from fly_nca.genome import FlySpawner, MultiFlySocialArena3D
 
 
 @pytest.mark.skipif(not PAN_CONNECTOME_PATH.is_file(), reason="Compiled 189,766-cell pan-connectome not on disk")
@@ -48,7 +48,7 @@ def test_fly_spawner_valid_genomes_and_male_female_social_interactions() -> None
     assert int((female.full_connectome.sex_cell_mask[sub.sex_code == 3] == 0).sum().item()) == 1266
     assert int((male.full_connectome.sex_cell_mask[sub.sex_code == 2] == 0).sum().item()) == 946
 
-    pair_arena = MultiFlySocialArena4D(flies=[female, male])
+    pair_arena = MultiFlySocialArena3D(flies=[female, male])
     snaps_pair = pair_arena.step_population(frames=4)
     snap_f, snap_m = snaps_pair[0], snaps_pair[1]
 
@@ -66,7 +66,7 @@ def test_fly_spawner_valid_genomes_and_male_female_social_interactions() -> None
     # B. Two Males (X:A=0.5 -> Sxl OFF -> Tra OFF -> DsxM + FruM+) on food cup -> rival cVA -> MALE_BOXING_ESCALATION
     male_1 = spawner.spawn_fly(sex="M", pos_xyz=(0.001, 0.0, 0.0), yaw_rad=0.0)
     male_2 = spawner.spawn_fly(sex="M", pos_xyz=(-0.001, 0.0, 0.0), yaw_rad=3.14)
-    fight_arena = MultiFlySocialArena4D(flies=[male_1, male_2])
+    fight_arena = MultiFlySocialArena3D(flies=[male_1, male_2])
     snaps_fight = fight_arena.step_population(frames=4)
 
     assert snaps_fight[0]["wing_song_active"] is False
@@ -84,7 +84,7 @@ def test_fly_spawner_valid_genomes_and_male_female_social_interactions() -> None
     assert frum_female.genome.dsx_isoform == "DsxF"
     assert frum_female.genome.fru_m_active is True
 
-    frum_arena = MultiFlySocialArena4D(flies=[wt_target_female, frum_female])
+    frum_arena = MultiFlySocialArena3D(flies=[wt_target_female, frum_female])
     snaps_frum = frum_arena.step_population(frames=4)
     snap_frum_f = snaps_frum[1]
     assert snap_frum_f["male_p1_rate"] == 0.0  # P1 neurons absent under DsxF!
@@ -140,7 +140,7 @@ def test_syncytial_blastoderm_embryogenesis_and_nobel1995_mutants() -> None:
 @pytest.mark.skipif(not PAN_CONNECTOME_PATH.is_file(), reason="Compiled 189,766-cell pan-connectome not on disk")
 def test_multimodal_courtship_threshold_motor_decode_and_plasticity() -> None:
     """4. Verify multimodal courtship gate (odor vs LC10+ppk23 vs cVA brake), 1,026-cell MotorOut decode, and plasticity."""
-    from fly_nca.body import FastTensorArena4D, MotorOut
+    from fly_nca.body import FastTensorArena3D, MotorOut
     from fly_nca.connectome import FullConnectomeFlyNCA
 
     fly_odor = FullConnectomeFlyNCA(sex="M")
@@ -149,7 +149,7 @@ def test_multimodal_courtship_threshold_motor_decode_and_plasticity() -> None:
     assert sub.mirror_partner_idx.shape == (189766,)
     assert int((sub.soma_xyz_um.norm(dim=1) > 0).sum().item()) > 140_000
 
-    arena = FastTensorArena4D(device=fly_odor.device)
+    arena = FastTensorArena3D(device=fly_odor.device)
     s_dist = arena.step_physics(MotorOut.zeros(device=fly_odor.device), dt_ms=0.0)
     s_dist.small_target_salience = 0.0
     for _ in range(3):

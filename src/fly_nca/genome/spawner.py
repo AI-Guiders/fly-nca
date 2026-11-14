@@ -1,4 +1,4 @@
-"""Genetic Fly Spawner & Multi-Fly 4D Social Arena (X:A -> Sxl -> Tra -> Dsx/Fru on the 189,766-Cell Pan-Connectome).
+"""Genetic Fly Spawner & Multi-Fly 3D Social Arena (X:A -> Sxl -> Tra -> Dsx/Fru on the 189,766-Cell Pan-Connectome).
 
 In *Drosophila melanogaster*, sex is determined cell-autonomously NOT by a Y chromosome (unlike mammals),
 but by the X-chromosome dose / X-to-autosome (`X:A`) ratio activating the `Sxl -> tra -> dsx / fru`
@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import torch
 
 from fly_nca.body.adapter import MotorOut, SensorIn
-from fly_nca.body.arena_4d import FastTensorArena4D, OdorPlume3D
+from fly_nca.body.arena_3d import FastTensorArena3D, OdorPlume3D
 from fly_nca.connectome.pan_connectome import FullConnectomeFlyNCA, FullConnectomeReadout
 from fly_nca.genome.fly_genome import FlyGenome
 
@@ -85,12 +85,12 @@ class IndividualFlyGenome:
 
 @dataclass
 class SpawnedFly:
-    """A living individual fly combining its IndividualFlyGenome, 189,766-cell Pan-Connectome, and 4D Body."""
+    """A living individual fly combining its IndividualFlyGenome, 189,766-cell Pan-Connectome, and 3D Body."""
 
     genome: IndividualFlyGenome
     full_connectome: FullConnectomeFlyNCA
     composition: FlyNCAComposition
-    arena: FastTensorArena4D
+    arena: FastTensorArena3D
     last_connectome_readout: FullConnectomeReadout | None = None
     last_telemetry: FlyFrameTelemetry | None = None
     current_behavior: SocialBehaviorLabel = "FORAGING_ROVER"
@@ -204,7 +204,7 @@ class FlySpawner:
         comp.hemolymph.amino_acid_level = ind_genome.initial_amino_level
         comp.mushroom_body.eta_learn = comp.mushroom_body.eta_learn * ind_genome.dopr1_learning_scale
 
-        arena = FastTensorArena4D(device=self.device)
+        arena = FastTensorArena3D(device=self.device)
         if pos_xyz is not None:
             arena.pos_xyz = torch.tensor(pos_xyz, device=self.device, dtype=torch.float32)
         else:
@@ -246,8 +246,8 @@ class FlySpawner:
 
 
 @dataclass
-class MultiFlySocialArena4D:
-    """Shared 4D spacetime arena hosting multiple spawned male & female 189,766-cell flies."""
+class MultiFlySocialArena3D:
+    """Shared 3D arena hosting multiple spawned male & female 189,766-cell flies."""
 
     flies: list[SpawnedFly]
     shared_plumes: list[OdorPlume3D] = field(default_factory=list)
@@ -312,7 +312,7 @@ class MultiFlySocialArena4D:
                 else:
                     f_i.arena.small_target_pos_xyz = None
 
-                # Step 4D body + 6 NCA organs
+                # Step 3D body + 6 NCA organs
                 telem = f_i.composition.step_cognitive_frame(f_i.arena)
                 f_i.last_telemetry = telem
 

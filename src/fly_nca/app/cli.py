@@ -9,7 +9,7 @@ import torch
 
 from fly_nca.app.lab import execute_scenario_protocol, open_lab
 from fly_nca.app.scenario import SCENARIOS
-from fly_nca.genome.spawner import FlySpawner, MultiFlySocialArena4D
+from fly_nca.genome.spawner import FlySpawner, MultiFlySocialArena3D
 
 
 def _device_default() -> str:
@@ -56,7 +56,7 @@ def cmd_spawn(args: argparse.Namespace) -> int:
         args.device = "cpu"
     spawner = FlySpawner(seed=args.seed, device=args.device)
     flies = spawner.spawn_population(n_flies=args.count)
-    social_arena = MultiFlySocialArena4D(flies=flies)
+    social_arena = MultiFlySocialArena3D(flies=flies)
     snapshots = social_arena.step_population(frames=args.steps)
     payload = {
         "n_flies": len(flies),
@@ -105,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     panel_p.add_argument("--json-out", type=str, default=None)
     panel_p.set_defaults(func=cmd_panel)
 
-    spawn_p = sub.add_parser("spawn", help="Spawn a population of X:A->Sxl->Tra->Dsx/Fru 189,766-cell flies in 4D arena")
+    spawn_p = sub.add_parser("spawn", help="Spawn a population of X:A->Sxl->Tra->Dsx/Fru 189,766-cell flies in 3D arena")
     spawn_p.add_argument("--count", type=int, default=4)
     spawn_p.add_argument("--steps", type=int, default=4)
     spawn_p.add_argument("--seed", type=int, default=42)

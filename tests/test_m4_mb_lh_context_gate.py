@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fly_nca.body import FastTensorArena4D, MotorOut
+from fly_nca.body import FastTensorArena3D, MotorOut
 from fly_nca.core import HemolymphState
 from fly_nca.organs import COMP_GAMMA1, COMP_GAMMA5, AntennalSEZNCA, LHSpinGateNCA, MushroomBodyNCA
 
@@ -60,7 +60,7 @@ def test_mb_5_percent_sparse_coding_and_t_maze_aversive_ltd_learning() -> None:
 
 def test_lh_spin_multimodal_glucla_and_gate_for_cltm() -> None:
     """2. Nat Commun 2019 (PMC6779902): cLTM requires ALL context modalities (odor + light + temp + texture) to match; any mismatch -> PI=0!"""
-    arena = FastTensorArena4D()
+    arena = FastTensorArena3D()
     al = AntennalSEZNCA()
     lh_spin = LHSpinGateNCA()
     hemo = HemolymphState(sugar_level=0.8)

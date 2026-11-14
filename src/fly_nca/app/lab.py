@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 from fly_nca.app.scenario import SCENARIOS, ScenarioSpec, get_scenario
-from fly_nca.body.arena_4d import FastTensorArena4D, OdorPlume3D
+from fly_nca.body.arena_3d import FastTensorArena3D, OdorPlume3D
 from fly_nca.composition import FlyFrameTelemetry, FlyNCAComposition
 from fly_nca.core.cell_state import CH_A
 from fly_nca.instruments.panel import sample_panel
@@ -22,7 +22,7 @@ class LabSession:
 
     scenario: ScenarioSpec
     fly: FlyNCAComposition
-    arena: FastTensorArena4D
+    arena: FastTensorArena3D
     recorder: ImpulseRecorder
     last_telem: FlyFrameTelemetry | None = None
     protocol_measurements: dict[str, Any] = field(default_factory=dict)
@@ -82,7 +82,7 @@ def open_lab(
     """Open a configured Laboratory session for a named published scenario."""
     spec = get_scenario(scenario_id)
     fly = FlyNCAComposition(device=device)
-    arena = FastTensorArena4D(device=device)
+    arena = FastTensorArena3D(device=device)
     rec = ImpulseRecorder(level=DebugLevel.FULL, store_dir=store_dir)
     return LabSession(scenario=spec, fly=fly, arena=arena, recorder=rec)
 
@@ -337,14 +337,14 @@ def execute_scenario_protocol(
         jump_wt = float(telem_wt.motor.jump_ttmn_burst)
 
         fly_lof = FlyNCAComposition(frazzled_state="lof", device=fly.device)
-        arena_lof = FastTensorArena4D(device=fly.device)
+        arena_lof = FastTensorArena3D(device=fly.device)
         arena_lof.looming_rate = 0.92
         telem_lof = fly_lof.step_cognitive_frame(arena_lof)
         ttmn_v_lof = float(fly_lof.vnc_autopilot.state[39, 0].item())
         jump_lof = float(telem_lof.motor.jump_ttmn_burst)
 
         fly_icd = FlyNCAComposition(frazzled_state="icd_rescue", device=fly.device)
-        arena_icd = FastTensorArena4D(device=fly.device)
+        arena_icd = FastTensorArena3D(device=fly.device)
         arena_icd.looming_rate = 0.92
         telem_icd = fly_icd.step_cognitive_frame(arena_icd)
         ttmn_v_icd = float(fly_icd.vnc_autopilot.state[39, 0].item())

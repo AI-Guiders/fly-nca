@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fly_nca.body import FastTensorArena4D, OdorPlume3D
+from fly_nca.body import FastTensorArena3D, OdorPlume3D
 from fly_nca.composition import FlyNCAComposition
 from fly_nca.nervous import (
     DebugLevel,
@@ -18,7 +18,7 @@ from fly_nca.nervous import (
 def test_nervous_impulse_trace_records_full_synaptic_wave_and_jsonl(tmp_path: Path) -> None:
     """Verify that ImpulseRecorder captures activate, suppress, score, threshold, select, and route events."""
     fly = FlyNCAComposition()
-    arena = FastTensorArena4D(
+    arena = FastTensorArena3D(
         plumes=[OdorPlume3D(pos_xyz=(0.02, 0.0, 0.0), glomerulus_id=0, intensity=1.0, is_sweet_food=True)]
     )
     rec = ImpulseRecorder(level=DebugLevel.FULL, store_dir=tmp_path)
