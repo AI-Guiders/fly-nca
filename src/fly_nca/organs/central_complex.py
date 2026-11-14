@@ -271,10 +271,17 @@ class CentralComplexNCA(nn.Module):
 
             dz = float(target_altitude_z - current_z)
             in_flight = target_altitude_z > 0.005 or current_z > 0.005
-            fwd_drive = 0.80 if nav_mode == "GOAL" else (0.35 if nav_mode == "SEARCH" else 0.0)
+            aversive_escape = valence_gate_signal < -0.35
+            fwd_drive = (
+                0.0
+                if aversive_escape
+                else (0.80 if nav_mode == "GOAL" else (0.35 if nav_mode == "SEARCH" else 0.0))
+            )
+            mdn_back = (min(1.0, abs(float(valence_gate_signal)) * 0.65) if (aversive_escape and not in_flight) else 0.0)
 
             dn_cmd = DescendingJoystickDN(
                 forward_walk_dnp09=(0.0 if in_flight else fwd_drive),
+                backward_walk_mdn=mdn_back,
                 turn_left_dna02=min(1.0, turn_l),
                 turn_right_dna02=min(1.0, turn_r),
                 flight_power_dng02=(0.95 if in_flight else 0.0),

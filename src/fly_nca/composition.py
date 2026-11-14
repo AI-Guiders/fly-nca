@@ -185,6 +185,13 @@ class FlyNCAComposition(nn.Module):
             )
 
             # 4. Lateral Horn & SPIN Multimodal Context Gate (GluCla AND-gate + soft priors)
+            if (chem.sweet_reward_us > 0.1 or chem.bitter_punish_us > 0.1) and float(chem.pn_glomeruli_50.max().item()) > 0.1:
+                us_sign = 1.0 if chem.sweet_reward_us >= chem.bitter_punish_us else -1.0
+                self.lh_spin.record_cltm_engram(
+                    odor_glomerulus=int(top_glom_idx[0].item()),
+                    sensor=sensor,
+                    valence_sign=us_sign,
+                )
             lh_out = self.lh_spin.step_lh_spin(
                 pn_glomeruli_50=chem.pn_glomeruli_50,
                 sensor=sensor,
