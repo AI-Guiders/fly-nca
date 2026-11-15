@@ -398,6 +398,7 @@ class MultiFlySocialArena3D:
             new_offspring: list[SpawnedFly] = []
 
             for i, f_i in enumerate(self.flies):
+                f_i.arena.time_ms = self.time_ms
                 f_i.arena.plumes = list(self.shared_plumes)
                 f_i.arena.wind_world_xyz = self.wind_world_xyz
                 f_i.arena.ambient_temperature_c = self.ambient_temperature_c

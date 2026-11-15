@@ -582,8 +582,8 @@ class FullConnectomeFlyNCA(nn.Module):
                     else:
                         self.a[c_fwd_idx] = min(1.0, 0.65 * drv)
                         self.a[c_bwd_idx] = 0.05 * drv
-                    self.adapt[t_lift_idx] = (self.adapt[t_lift_idx] + 0.035).clamp(0.0, 1.0)
-                    self.adapt[t_ext_idx] = (self.adapt[t_ext_idx] * 0.90).clamp(0.0, 1.0)
+                    self.adapt[t_lift_idx] = (self.adapt[t_lift_idx] + 0.14).clamp(0.0, 1.0)
+                    self.adapt[t_ext_idx] = (self.adapt[t_ext_idx] * 0.55).clamp(0.0, 1.0)
                 else:
                     # Stance anti-gravity support & power stroke: extend trochanter/tibia against gravity, grip agar, drive coxa
                     self.a[t_ext_idx] = min(1.0, 0.65 * drv)
@@ -599,8 +599,8 @@ class FullConnectomeFlyNCA(nn.Module):
                     else:
                         self.a[c_bwd_idx] = min(1.0, 0.65 * drv)
                         self.a[c_fwd_idx] = 0.05 * drv
-                    self.adapt[t_ext_idx] = (self.adapt[t_ext_idx] + 0.035).clamp(0.0, 1.0)
-                    self.adapt[t_lift_idx] = (self.adapt[t_lift_idx] * 0.90).clamp(0.0, 1.0)
+                    self.adapt[t_ext_idx] = (self.adapt[t_ext_idx] + 0.14).clamp(0.0, 1.0)
+                    self.adapt[t_lift_idx] = (self.adapt[t_lift_idx] * 0.55).clamp(0.0, 1.0)
 
         # 2) Thoracic stretch-activated DLM (downstroke) <-> DVM (upstroke) wing oscillation
         pip_idx_w = cg["dimorphic_male_pip10"]
@@ -609,7 +609,7 @@ class FullConnectomeFlyNCA(nn.Module):
         gf_jump = self.group_mean_rate("dn_gf_dnp01")
         dng02_r = self.group_mean_rate("dn_dng02")
         song_on = self.fru_m_active and (pip_r_w > 0.08 or p1_r_w > 0.08)
-        flight_on = (gf_jump > 0.35) or (dng02_r > 0.35)
+        flight_on = (gf_jump > 0.55 or dng02_r > 0.65) and not song_on
         if song_on or flight_on:
             # Fibrillar indirect wing muscles (DLM / DVM) fire stretch-activated strokes ONLY during song or flight
             stroke_amp = 0.85 if flight_on else 0.45

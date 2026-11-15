@@ -769,15 +769,16 @@ def run_mujoco_colony_and_export_viewer(
         snaps = colony.step_population(frames=1, enable_ontogeny_and_reproduction=True)
         history_frames.append(snaps)
 
-        for sub_k in range(55):
-            global_sub = step_i * 55 + sub_k
+        # Synchronize MuJoCo world time with Fly-NCA cognitive frame time (1 cognitive frame = 4.038 ms = 2 x 2.0 ms MuJoCo steps!)
+        for sub_k in range(2):
+            global_sub = step_i * 2 + sub_k
             for f in colony.flies:
                 if isinstance(f.arena, MuJoCoFlyBodyAdapter):
                     f.arena.apply_motor_to_mujoco(step_idx=global_sub)
             sim.step()
             for f in colony.flies:
                 if isinstance(f.arena, MuJoCoFlyBodyAdapter):
-                    f.arena.sync_from_mujoco(full_proprioception=(sub_k == 54))
+                    f.arena.sync_from_mujoco(full_proprioception=(sub_k == 1))
 
         # Update dynamic 3D segmented geoms for any real F1 offspring (egg -> segmented white maggot larva -> amber pupa)
         # When a G1/G2 pupa ecloses into an adult, bind its 189,766-cell brain to a real 6-legged NeuroMechFly mecha at the pupa's position!
@@ -1377,18 +1378,24 @@ def serve_live_mujoco_colony(
     while True:
         if passive_viewer is not None and not passive_viewer.is_running():
             passive_viewer = None
-        snaps = colony.step_population(frames=1, enable_ontogeny_and_reproduction=True)
-        for sub_k in range(55):
-            global_sub = step_i * 55 + sub_k
-            for f in colony.flies:
-                if isinstance(f.arena, MuJoCoFlyBodyAdapter):
-                    f.arena.apply_motor_to_mujoco(step_idx=global_sub)
-            sim.step()
-            if passive_viewer is not None and sub_k % 18 == 0:
-                passive_viewer.sync()
-            for f in colony.flies:
-                if isinstance(f.arena, MuJoCoFlyBodyAdapter):
-                    f.arena.sync_from_mujoco(full_proprioception=(sub_k == 54))
+        scale_val = max(0.05, float(latest_state.get("scale", 1.0)))
+        n_brain_frames = max(1, min(8, int(round(scale_val))))
+        snaps = []
+        for _ in range(n_brain_frames):
+            snaps = colony.step_population(frames=1, enable_ontogeny_and_reproduction=True)
+            # Unified Clock: 1 cognitive frame (4.038 ms) = 2 MuJoCo physics steps (2 x 2.0 ms = 4.0 ms)!
+            for sub_k in range(2):
+                global_sub = step_i * 2 + sub_k
+                for f in colony.flies:
+                    if isinstance(f.arena, MuJoCoFlyBodyAdapter):
+                        f.arena.apply_motor_to_mujoco(step_idx=global_sub)
+                sim.step()
+                for f in colony.flies:
+                    if isinstance(f.arena, MuJoCoFlyBodyAdapter):
+                        f.arena.sync_from_mujoco(full_proprioception=(sub_k == 1))
+            step_i += 1
+        if passive_viewer is not None:
+            passive_viewer.sync()
 
         # When a G1/G2 pupa ecloses into an adult, bind its 189,766-cell brain to a real 6-legged NeuroMechFly mecha at the pupa's position!
         for fo in colony.flies:
@@ -1480,5 +1487,4 @@ def serve_live_mujoco_colony(
                 ensure_ascii=False,
             )
             cond.notify_all()
-        step_i += 1
-        time.sleep(0.01)
+        time.sleep(0.01 if scale_val >= 1.0 else max(0.02, 0.01 / scale_val))
