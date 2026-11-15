@@ -22,6 +22,7 @@ from fly_nca.body.adapter import MotorOut, SensorIn
 from fly_nca.body.arena_3d import FastTensorArena3D, OdorPlume3D
 from fly_nca.connectome.pan_connectome import FullConnectomeFlyNCA, FullConnectomeReadout
 from fly_nca.genome.fly_genome import FlyGenome
+from fly_nca.organs.vnc_autopilot import DescendingJoystickDN
 
 if TYPE_CHECKING:
     from fly_nca.composition import FlyFrameTelemetry, FlyNCAComposition
@@ -654,8 +655,46 @@ class MultiFlySocialArena3D:
                     sex_peptide_uterus=sex_peptide_conc,
                 )
                 f_i.last_connectome_readout = conn_out
+
+                # Feed the 189,766-cell connectome's descending neuron (DN) readout into the 5-port VNCAutopilotNCA
+                dn_from_connectome = DescendingJoystickDN(
+                    forward_walk_dnp09=max(
+                        float(telem.cx.dn_command.forward_walk_dnp09),
+                        float(conn_out.dnp09_forward_rate),
+                        float(conn_out.dn_cluster_rates.get("walking", 0.0)),
+                    ),
+                    backward_walk_mdn=max(
+                        float(telem.cx.dn_command.backward_walk_mdn),
+                        float(conn_out.mdn_backward_rate),
+                    ),
+                    turn_left_dna02=float(telem.cx.dn_command.turn_left_dna02),
+                    turn_right_dna02=float(telem.cx.dn_command.turn_right_dna02),
+                    flight_power_dng02=float(telem.cx.dn_command.flight_power_dng02),
+                    flight_lift_dn=float(telem.cx.dn_command.flight_lift_dn),
+                    gf_looming_spike=float(conn_out.gf_dnp01_rate),
+                    freeze_dn=float(telem.cx.dn_command.freeze_dn),
+                    proboscis_fdg=max(float(telem.chem.fdg_proboscis_cmd), float(conn_out.dn_cluster_rates.get("feeding", 0.0))),
+                )
+                sub_dt = 0.25 * 4.038
+                vnc_motor = telem.motor
+                for _ in range(4):
+                    vnc_motor, f_i.composition.last_an_efference = f_i.composition.vnc_autopilot.step_autopilot(
+                        sensor, dn=dn_from_connectome, dt_ms=sub_dt
+                    )
                 pan_motor = f_i.full_connectome.decode_motor_effectors()
-                _ = f_i.arena.step_physics(pan_motor, dt_ms=4.038)
+                combined_motor = MotorOut(
+                    leg_joint_drive=vnc_motor.leg_joint_drive,
+                    tarsus_adhesion=vnc_motor.tarsus_adhesion,
+                    wing_drive_lr=vnc_motor.wing_drive_lr,
+                    wing_pitch_lr=vnc_motor.wing_pitch_lr,
+                    wing_song_mode=pan_motor.wing_song_mode if f_i.wing_song_active else torch.zeros_like(pan_motor.wing_song_mode),
+                    haltere_drive=pan_motor.haltere_drive,
+                    neck_torque_rpy=vnc_motor.neck_torque_rpy,
+                    proboscis_per=max(float(pan_motor.proboscis_per), float(vnc_motor.proboscis_per)),
+                    jump_ttmn_burst=float(vnc_motor.jump_ttmn_burst),
+                    abdomen_bend_pitch_yaw=pan_motor.abdomen_bend_pitch_yaw,
+                )
+                _ = f_i.arena.step_physics(combined_motor, dt_ms=4.038)
 
                 # Read out motor & circuit states directly from the fly's own 189,766-cell connectome!
                 f_i.wing_song_active = float(pan_motor.wing_song_mode[0].item()) > 0.02

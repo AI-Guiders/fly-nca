@@ -319,25 +319,33 @@ def test_mujoco_xray_inspector_and_6_leg_ground_contact() -> None:
     spawner = FlySpawner(seed=108, device="cpu")
     fly = spawner.spawn_fly(sex="M", pos_xyz=(0.0, 0.0, 0.0), yaw_rad=0.0)
 
-    s_legs = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ACTIVE_ONLY)
+    s_legs_full = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ONLY)
+    s_legs_act = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ACTIVE_ONLY)
     s_all = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.ALL_BIOLOGICAL)
-    leg_joint_set = set(s_legs.anatomical_joints)
+    leg_full_set = set(s_legs_full.anatomical_joints)
+    leg_act_set = set(s_legs_act.anatomical_joints)
+    extra_body_names = ("l_wing", "r_wing", "l_haltere", "r_haltere", "c_head", "c_rostrum", "c_haustellum", "c_abdomen12")
     clean_anat_joints = [
         aj
         for aj in s_all.anatomical_joints
-        if (aj in leg_joint_set)
-        or (aj.child.name in ("l_wing", "r_wing", "l_haltere", "r_haltere", "c_head", "c_rostrum", "c_haustellum", "c_abdomen12"))
+        if (aj in leg_full_set) or (aj.child.name in extra_body_names)
+    ]
+    act_anat_joints = [
+        aj
+        for aj in s_all.anatomical_joints
+        if (aj in leg_act_set) or (aj.child.name in extra_body_names)
     ]
     skel = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, anatomical_joints=clean_anat_joints)
-    act_dofs = list(skel.iter_jointdofs())
+    act_skel = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, anatomical_joints=act_anat_joints)
+    act_dofs = list(act_skel.iter_jointdofs())
 
     nmf = NeuroMechFly(name="fly_m")
-    nmf.add_joints(skel, neutral_pose=KinematicPosePreset.NEUTRAL, stiffness=3.0, damping=0.4)
-    nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL, kp=65.0)
+    nmf.add_joints(skel, neutral_pose=KinematicPosePreset.NEUTRAL)
+    nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL)
     nmf.add_leg_adhesion()
 
     world = FlatGroundWorld()
-    world.add_fly(nmf, spawn_position=(0.0, 0.0, 0.55), spawn_rotation=Rotation3D("quat", (1.0, 0.0, 0.0, 0.0)))
+    world.add_fly(nmf, spawn_position=(0.0, 0.0, 0.0), spawn_rotation=Rotation3D("quat", (1.0, 0.0, 0.0, 0.0)))
     sim = Simulation(world)
     sim.reset()
 

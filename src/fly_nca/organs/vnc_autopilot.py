@@ -257,12 +257,16 @@ class VNCAutopilotNCA(nn.Module):
                 + (2.0 * self.leg_in_bio.ie_ratio) * comp_swing_inh
             )
 
-            # Forward Coxa vs Moonwalker (MDN) Backward Coxa gated by Port 2 shunt!
-            exc_b[c_fwd, 0] = lbl_act * dn.forward_walk_dnp09 * side_gain
-            shunt_b[c_fwd, 0] = w_leg_shunt * dn.backward_walk_mdn  # MDN shunts forward protraction!
+            # Forward Coxa (stance power stroke) vs Swing Return / Moonwalker (MDN) Backward Coxa gated by Port 2 shunt!
+            exc_b[c_fwd, 0] = w_leg_exc * (
+                dn.forward_walk_dnp09 * (1.0 + lbl_act) + lul_act * dn.backward_walk_mdn
+            ) * side_gain
+            shunt_b[c_fwd, 0] = w_leg_shunt * (lul_act * dn.forward_walk_dnp09 + dn.backward_walk_mdn * (1.0 + lbl_act))
 
-            exc_b[c_bwd, 0] = lbl_act * dn.backward_walk_mdn * side_gain
-            shunt_b[c_bwd, 0] = w_leg_shunt * dn.forward_walk_dnp09
+            exc_b[c_bwd, 0] = w_leg_exc * (
+                dn.backward_walk_mdn * (1.0 + lbl_act) + lul_act * dn.forward_walk_dnp09
+            ) * side_gain
+            shunt_b[c_bwd, 0] = w_leg_shunt * (dn.forward_walk_dnp09 * (1.0 + lbl_act) + lul_act * dn.backward_walk_mdn)
 
             if dn.freeze_dn > self.leg_mn_bio.ach_share:
                 root_shunt[c_lul130] = 2.0 * w_leg_shunt

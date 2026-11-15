@@ -183,22 +183,8 @@ class MuJoCoFlyBodyAdapter:
             step_idx=step_idx,
         )
         thorax_id = int(self.sim._internal_bodyids_by_fly[self.nmf.name][0])
-        R_th = self.sim.mj_data.xmat[thorax_id].reshape(3, 3)
-        mean_w = 0.5 * float((m.wing_drive_lr[0] + m.wing_drive_lr[1]).item())
-        if m.jump_ttmn_burst > 0.45 or mean_w > 0.45:
-            adh[:] = 0.0
-            pos_th = self.sim.get_body_positions(self.nmf.name)[0]
-            cur_z = float(pos_th[2])
-            lift_f = 9.85 + max(-2.5, min(3.5, (1.65 - cur_z) * 4.0))
-            fx = 0.45 * float(R_th[0, 0]) * mean_w
-            fy = 0.45 * float(R_th[1, 0]) * mean_w
-            self.sim.mj_data.xfrc_applied[thorax_id, :3] = [fx, fy, lift_f]
-            self.sim.mj_data.xfrc_applied[thorax_id, 3] = 2.0 * float(R_th[1, 2])
-            self.sim.mj_data.xfrc_applied[thorax_id, 4] = -2.0 * float(R_th[0, 2])
-            self.sim.mj_data.xfrc_applied[thorax_id, 5] = 0.0
-        else:
-            # Zero external force or torque on the thorax when standing/walking on agar: 100% supported by the 6 legs!
-            self.sim.mj_data.xfrc_applied[thorax_id, :] = 0.0
+        # Zero external force or torque on the thorax: 100% supported by the 6 legs in MuJoCo!
+        self.sim.mj_data.xfrc_applied[thorax_id, :] = 0.0
         self.sim.set_actuator_inputs(self.nmf.name, ActuatorType.POSITION, ctrl)
         self.sim.set_leg_adhesion_states(self.nmf.name, adh)
 
@@ -474,32 +460,27 @@ def motor_out_to_neuromechfly_ctrl(
         tibia_ext = float(lj[leg_i, 2])
         tarsus_flx = float(lj[leg_i, 3])
 
-        # Every NeuroMechFly leg has Jacobian:
-        # - d(x_tarsus5)/d(coxa_pitch) < 0 and d(x_tarsus5)/d(tibia_pitch) < 0 (except lh/rh tibia_pitch > 0)
-        # - d(z_tarsus5)/d(trochanterfemur_pitch) < 0 (-1.34 mm/rad):
-        #   - Swing phase (troch_lift > 0): DECREASE trochanterfemur_pitch (-0.18 * troch_lift) -> lifts foot UP (+z)
-        #   - Stance phase (troch_lift < 0): INCREASE trochanterfemur_pitch (-0.18 * troch_lift > 0) -> presses foot DOWN (-z) onto agar!
+        # Direct 1:1 anatomical joint mapping from VNC motor output (zero artificial offsets):
         if fg_leg in ("lf", "rf"):
             if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
-                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += 0.22 * coxa_fwd
+                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += coxa_fwd
             if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += 0.162 - 0.18 * troch_lift
+                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] -= troch_lift
             if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.095 - 0.18 * coxa_fwd
+                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += tibia_ext
             if f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= 0.10 * tarsus_flx
+                ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= tarsus_flx
         else:
-            hind_plant = -0.05 if fg_leg in ("lh", "rh") else 0.0
-            tibia_sign = 1.0 if fg_leg in ("lh", "rh") else -1.0
+            if f"c_thorax-{fg_leg}_coxa-roll" in dof_idx:
+                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-roll"]] += coxa_fwd
             if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
-                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += 0.22 * coxa_fwd
+                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += coxa_fwd
             if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
-                jump_push = 0.45 * float(motor.jump_ttmn_burst) if fg_leg in ("lm", "rm") else 0.0
-                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += hind_plant - 0.18 * troch_lift + jump_push
+                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] -= troch_lift - float(motor.jump_ttmn_burst)
             if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.18 * tibia_sign * coxa_fwd
+                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += tibia_ext
             if f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= 0.10 * tarsus_flx
+                ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= tarsus_flx
 
     # 2. Neck 3D gimbal (roll, pitch, yaw)
     neck = motor.neck_torque_rpy.detach().cpu().numpy()
@@ -691,18 +672,26 @@ def run_mujoco_colony_and_export_viewer(
                 conaffinity=0,
             )
 
-    # Build clean Mecha skeleton: 36 calibrated active leg DOFs + 6 wing DOFs (l_wing/r_wing) + 3 neck DOFs (c_head) = 51 DOFs
-    s_legs = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ACTIVE_ONLY)
+    # Build clean Mecha skeleton using FlyGym's native LEGS_ONLY (includes passive tarsal joints!) + active LEGS_ACTIVE_ONLY actuators
+    s_legs_full = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ONLY)
+    s_legs_act = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ACTIVE_ONLY)
     s_all = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.ALL_BIOLOGICAL)
-    leg_joint_set = set(s_legs.anatomical_joints)
+    leg_full_set = set(s_legs_full.anatomical_joints)
+    leg_act_set = set(s_legs_act.anatomical_joints)
+    extra_body_names = ("l_wing", "r_wing", "l_haltere", "r_haltere", "c_head", "c_rostrum", "c_haustellum", "c_abdomen12")
     clean_anat_joints = [
         aj
         for aj in s_all.anatomical_joints
-        if (aj in leg_joint_set)
-        or (aj.child.name in ("l_wing", "r_wing", "l_haltere", "r_haltere", "c_head", "c_rostrum", "c_haustellum", "c_abdomen12"))
+        if (aj in leg_full_set) or (aj.child.name in extra_body_names)
+    ]
+    act_anat_joints = [
+        aj
+        for aj in s_all.anatomical_joints
+        if (aj in leg_act_set) or (aj.child.name in extra_body_names)
     ]
     skeleton = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, anatomical_joints=clean_anat_joints)
-    act_dofs = list(skeleton.iter_jointdofs())
+    act_skeleton = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, anatomical_joints=act_anat_joints)
+    act_dofs = list(act_skeleton.iter_jointdofs())
     nmf_map: dict[str, NeuroMechFly] = {}
 
     # Fixed world overview camera framing the 36-mm glass Petri dish, agar floor, and 2.5-mm flies in natural proportion!
@@ -714,8 +703,8 @@ def run_mujoco_colony_and_export_viewer(
 
     for idx, f in enumerate(flies):
         nmf = NeuroMechFly(name=f.genome.fly_id)
-        nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL, stiffness=3.0, damping=0.4)
-        nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL, kp=65.0)
+        nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL)
+        nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL)
         nmf.add_leg_adhesion()
         nmf.colorize()
         if f.genome.dsx_isoform == "DsxM":
@@ -729,16 +718,16 @@ def run_mujoco_colony_and_export_viewer(
         py_mm = f.pos_xyz[1] * 1000.0
         yaw = float(f.arena.thorax_rpy[2].item())
         q = (float(math.cos(yaw / 2.0)), 0.0, 0.0, float(math.sin(yaw / 2.0)))
-        world.add_fly(nmf, spawn_position=(px_mm, py_mm, 0.55), spawn_rotation=Rotation3D("quat", q))
+        world.add_fly(nmf, spawn_position=(px_mm, py_mm, 0.0), spawn_rotation=Rotation3D("quat", q))
         nmf_map[f.genome.fly_id] = nmf
 
     reserve_nmf_names = ["g1_eclosed_adult_0", "g1_eclosed_adult_1", "g1_eclosed_adult_2"]
-    reserve_spots = ((-4.8, 4.2, 0.55), (4.8, -4.2, 0.55), (4.2, 4.6, 0.55))
+    reserve_spots = ((-4.8, 4.2, 0.0), (4.8, -4.2, 0.0), (4.2, 4.6, 0.0))
     reserve_nmf_objs: dict[str, NeuroMechFly] = {}
     for r_idx, r_name in enumerate(reserve_nmf_names):
         r_nmf = NeuroMechFly(name=r_name)
-        r_nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL, stiffness=3.0, damping=0.4)
-        r_nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL, kp=65.0)
+        r_nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL)
+        r_nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL)
         r_nmf.add_leg_adhesion()
         r_nmf.colorize()
         world.add_fly(
@@ -1297,17 +1286,25 @@ def serve_live_mujoco_colony(
                 conaffinity=0,
             )
 
-    s_legs = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ACTIVE_ONLY)
+    s_legs_full = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ONLY)
+    s_legs_act = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ACTIVE_ONLY)
     s_all = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.ALL_BIOLOGICAL)
-    leg_joint_set = set(s_legs.anatomical_joints)
+    leg_full_set = set(s_legs_full.anatomical_joints)
+    leg_act_set = set(s_legs_act.anatomical_joints)
+    extra_body_names = ("l_wing", "r_wing", "l_haltere", "r_haltere", "c_head", "c_rostrum", "c_haustellum", "c_abdomen12")
     clean_anat_joints = [
         aj
         for aj in s_all.anatomical_joints
-        if (aj in leg_joint_set)
-        or (aj.child.name in ("l_wing", "r_wing", "l_haltere", "r_haltere", "c_head", "c_rostrum", "c_haustellum", "c_abdomen12"))
+        if (aj in leg_full_set) or (aj.child.name in extra_body_names)
+    ]
+    act_anat_joints = [
+        aj
+        for aj in s_all.anatomical_joints
+        if (aj in leg_act_set) or (aj.child.name in extra_body_names)
     ]
     skeleton = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, anatomical_joints=clean_anat_joints)
-    act_dofs = list(skeleton.iter_jointdofs())
+    act_skeleton = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, anatomical_joints=act_anat_joints)
+    act_dofs = list(act_skeleton.iter_jointdofs())
     nmf_map: dict[str, NeuroMechFly] = {}
     world_cam = world.mjcf_root.worldbody.add_camera(
         name="arena_overview_cam",
@@ -1316,8 +1313,8 @@ def serve_live_mujoco_colony(
     )
     for f in flies:
         nmf = NeuroMechFly(name=f.genome.fly_id)
-        nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL, stiffness=3.0, damping=0.4)
-        nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL, kp=65.0)
+        nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL)
+        nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL)
         nmf.add_leg_adhesion()
         nmf.colorize()
         if f.genome.dsx_isoform == "DsxM":
@@ -1328,16 +1325,16 @@ def serve_live_mujoco_colony(
                         g.rgba = (0.12, 0.10, 0.09, 1.0)
         yaw = float(f.arena.thorax_rpy[2].item())
         q = (float(math.cos(yaw / 2.0)), 0.0, 0.0, float(math.sin(yaw / 2.0)))
-        world.add_fly(nmf, spawn_position=(f.pos_xyz[0] * 1000.0, f.pos_xyz[1] * 1000.0, 0.55), spawn_rotation=Rotation3D("quat", q))
+        world.add_fly(nmf, spawn_position=(f.pos_xyz[0] * 1000.0, f.pos_xyz[1] * 1000.0, 0.0), spawn_rotation=Rotation3D("quat", q))
         nmf_map[f.genome.fly_id] = nmf
 
     reserve_nmf_names = ["g1_eclosed_adult_0", "g1_eclosed_adult_1", "g1_eclosed_adult_2"]
-    reserve_spots = ((-4.8, 4.2, 0.55), (4.8, -4.2, 0.55), (4.2, 4.6, 0.55))
+    reserve_spots = ((-4.8, 4.2, 0.0), (4.8, -4.2, 0.0), (4.2, 4.6, 0.0))
     reserve_nmf_objs: dict[str, NeuroMechFly] = {}
     for r_idx, r_name in enumerate(reserve_nmf_names):
         r_nmf = NeuroMechFly(name=r_name)
-        r_nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL, stiffness=3.0, damping=0.4)
-        r_nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL, kp=65.0)
+        r_nmf.add_joints(skeleton, neutral_pose=KinematicPosePreset.NEUTRAL)
+        r_nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL)
         r_nmf.add_leg_adhesion()
         r_nmf.colorize()
         world.add_fly(
