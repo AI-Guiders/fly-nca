@@ -487,6 +487,8 @@ class FullConnectomeFlyNCA(nn.Module):
         alpha_adapt = BANC_GJ_WT_FRACTION
         mito_cap = sub.mito_atp_capacity.clamp(sens_bio.ach_share, cx_out_bio.ie_ratio)
 
+        prev_a = self.a.clone()
+        prev_adapt = self.adapt.clone()
         for _ in range(max(1, int(n_synaptic_hops))):
             # Port 3: Signed axo-axonic presynaptic modulation across all 189,766 axons (+ACh facilitation, -GABA/Glu presynaptic inhibition)
             a_col = (self.a * self.sex_cell_mask).unsqueeze(1)
@@ -534,19 +536,28 @@ class FullConnectomeFlyNCA(nn.Module):
 
         if walk_dn > 0.005:
             loads = sensor.leg_ground_load.detach().cpu().tolist() if sensor.leg_ground_load.numel() >= 6 else [0.5] * 6
-            # Snapshot pre-step adaptation & lift rates synchronously across all 6 legs so leg 0 never starves legs 1..5
+            # Read previous stance/swing state BEFORE the 6-hop synaptic wave overwrote motor pools!
+            a_was_swing = float(prev_a[cg["mn_L1_troch_lift"]].mean().item()) > float(prev_a[cg["mn_L1_troch_ext"]].mean().item())
+            # Restore motor neuron Shaker K+ adaptation from pre-wave state so only actual motor firing drives CPG fatigue!
+            for lt in leg_tags:
+                for mn_k in (f"mn_{lt}_troch_ext", f"mn_{lt}_troch_lift", f"mn_{lt}_tibia_ext", f"mn_{lt}_tibia_flex"):
+                    if mn_k in cg:
+                        self.adapt[cg[mn_k]] = prev_adapt[cg[mn_k]]
+
             st_adapts = [
                 float(self.adapt[cg.get(f"mn_{lt}_troch_ext", cg[f"mn_{lt}_tibia_ext"])].mean().item())
                 for lt in leg_tags
             ]
             sw_adapts = [float(self.adapt[cg[f"mn_{lt}_troch_lift"]].mean().item()) for lt in leg_tags]
             net_fatigue = [st_adapts[i] - sw_adapts[i] for i in range(6)]
-
-            # Break initial tie using real cuticular load difference between Tripod A (0,3,4) and Tripod B (1,2,5)
             tripod_a_fatigue = (net_fatigue[0] + net_fatigue[3] + net_fatigue[4]) / 3.0
             tripod_b_fatigue = (net_fatigue[1] + net_fatigue[2] + net_fatigue[5]) / 3.0
-            if abs(tripod_a_fatigue - tripod_b_fatigue) < 1e-4:
-                tripod_a_fatigue += 0.02
+
+            # Pure local Shaker K+ adaptation & campaniform load hysteresis (zero step_counter!):
+            if a_was_swing:
+                tripod_a_swing = (tripod_b_fatigue - tripod_a_fatigue) < 0.08
+            else:
+                tripod_a_swing = (tripod_a_fatigue - tripod_b_fatigue) > 0.08
 
             for leg_i, l_tag in enumerate(leg_tags):
                 side_gain = (1.15 if (turn_r > turn_l + 0.02) else 1.0) if (leg_i % 2 == 0) else (1.15 if (turn_l > turn_r + 0.02) else 1.0)
@@ -561,46 +572,44 @@ class FullConnectomeFlyNCA(nn.Module):
                 t_grip_idx = cg[f"mn_{l_tag}_tarsus_grip"]
                 t_lev_idx = cg.get(f"mn_{l_tag}_tarsus_lev")
 
-                my_tripod_f = tripod_a_fatigue if leg_i in (0, 3, 4) else tripod_b_fatigue
-                other_tripod_f = tripod_b_fatigue if leg_i in (0, 3, 4) else tripod_a_fatigue
-
-                # Tripod A (0,3,4) and Tripod B (1,2,5) alternate via Shaker K+ adaptation at natural ~10 Hz stepping cadence (~10 frames per half-stride):
-                # while one tripod swings, the opposing tripod extends against gravity in stance!
-                can_swing = (my_tripod_f >= other_tripod_f) if leg_i in (0, 3, 4) else (my_tripod_f > other_tripod_f)
+                can_swing = tripod_a_swing if leg_i in (0, 3, 4) else (not tripod_a_swing)
                 if can_swing:
-                    # Swing phase: lift trochanter, flex tibia, release tarsal adhesion, protract coxa
-                    self.a[t_lift_idx] = min(1.0, 0.65 * drv)
+                    # Swing phase: lift trochanter BEFORE protracting coxa forward
+                    self.a[t_lift_idx] = min(1.0, 0.70 * drv)
                     self.a[tb_flex_idx] = min(1.0, 0.55 * drv)
                     self.a[t_ext_idx] = 0.05 * drv
                     self.a[tb_ext_idx] = 0.05 * drv
                     self.a[t_grip_idx] = 0.02 * drv
                     if t_lev_idx is not None and t_lev_idx.numel() > 0:
                         self.a[t_lev_idx] = min(1.0, 0.70 * drv)
+                    # Protract coxa only once the leg has unloaded from the ground (loads[leg_i] < 0.25) or adaptation is mid-swing!
+                    swing_prog = min(1.0, max(0.25 if loads[leg_i] < 0.25 else 0.0, sw_adapts[leg_i] * 8.0))
                     if not bwd_mode:
-                        self.a[c_bwd_idx] = min(1.0, 0.65 * drv)
+                        self.a[c_bwd_idx] = min(1.0, 0.65 * drv * swing_prog)
                         self.a[c_fwd_idx] = 0.05 * drv
                     else:
-                        self.a[c_fwd_idx] = min(1.0, 0.65 * drv)
+                        self.a[c_fwd_idx] = min(1.0, 0.65 * drv * swing_prog)
                         self.a[c_bwd_idx] = 0.05 * drv
-                    self.adapt[t_lift_idx] = (self.adapt[t_lift_idx] + 0.14).clamp(0.0, 1.0)
-                    self.adapt[t_ext_idx] = (self.adapt[t_ext_idx] * 0.55).clamp(0.0, 1.0)
+                    self.adapt[t_lift_idx] = (self.adapt[t_lift_idx] + 0.025).clamp(0.0, 1.0)
+                    self.adapt[t_ext_idx] = (self.adapt[t_ext_idx] * 0.90).clamp(0.0, 1.0)
                 else:
-                    # Stance anti-gravity support & power stroke: extend trochanter/tibia against gravity, grip agar, drive coxa
-                    self.a[t_ext_idx] = min(1.0, 0.65 * drv)
+                    # Stance anti-gravity support & power stroke: extend trochanter/tibia against gravity, grip agar, drive coxa once loaded!
+                    self.a[t_ext_idx] = min(1.0, 0.70 * drv)
                     self.a[tb_ext_idx] = min(1.0, 0.60 * drv)
                     self.a[t_grip_idx] = min(1.0, 0.85 * drv)
                     self.a[t_lift_idx] = 0.05 * drv
                     self.a[tb_flex_idx] = 0.05 * drv
                     if t_lev_idx is not None and t_lev_idx.numel() > 0:
                         self.a[t_lev_idx] = 0.02 * drv
+                    stance_prog = min(1.0, max(0.35 if loads[leg_i] > 0.15 else 0.0, st_adapts[leg_i] * 8.0))
                     if not bwd_mode:
-                        self.a[c_fwd_idx] = min(1.0, 0.65 * drv)
+                        self.a[c_fwd_idx] = min(1.0, 0.65 * drv * stance_prog)
                         self.a[c_bwd_idx] = 0.05 * drv
                     else:
-                        self.a[c_bwd_idx] = min(1.0, 0.65 * drv)
+                        self.a[c_bwd_idx] = min(1.0, 0.65 * drv * stance_prog)
                         self.a[c_fwd_idx] = 0.05 * drv
-                    self.adapt[t_ext_idx] = (self.adapt[t_ext_idx] + 0.14).clamp(0.0, 1.0)
-                    self.adapt[t_lift_idx] = (self.adapt[t_lift_idx] * 0.55).clamp(0.0, 1.0)
+                    self.adapt[t_ext_idx] = (self.adapt[t_ext_idx] + 0.025).clamp(0.0, 1.0)
+                    self.adapt[t_lift_idx] = (self.adapt[t_lift_idx] * 0.90).clamp(0.0, 1.0)
 
         # 2) Thoracic stretch-activated DLM (downstroke) <-> DVM (upstroke) wing oscillation
         pip_idx_w = cg["dimorphic_male_pip10"]
@@ -816,22 +825,10 @@ class FullConnectomeFlyNCA(nn.Module):
         dvm_l = self.group_mean_rate("mn_wing_dvm_left")
         dlm_r = self.group_mean_rate("mn_wing_dlm_right")
         dvm_r = self.group_mean_rate("mn_wing_dvm_right")
-        # Flight drive is active when bilateral DLM/DVM power muscles fire together (dlm_r + dvm_r > 0.35)
-        bilat_flight = (dlm_r + dvm_r) > 0.35 and (dlm_l + dvm_l) > 0.35
-        w_l = (dlm_l + dvm_l) if bilat_flight else 0.0
-        w_r = (dlm_r + dvm_r) if bilat_flight else 0.0
-
         b_l = self.group_mean_rate("mn_wing_b1_b2_left")
         i_l = self.group_mean_rate("mn_wing_i1_iii_left")
         b_r = self.group_mean_rate("mn_wing_b1_b2_right")
         i_r = self.group_mean_rate("mn_wing_i1_iii_right")
-        wing_drive = torch.tensor([min(1.0, w_l), min(1.0, w_r)], device=self.device, dtype=torch.float32)
-        wing_pitch = torch.tensor(
-            [max(-1.0, min(1.0, (dlm_l - dvm_l) + (b_l - i_l))), max(-1.0, min(1.0, (dlm_r - dvm_r) + (b_r - i_r)))],
-            device=self.device,
-            dtype=torch.float32,
-        )
-
         pip_idx = self.substrate.cell_groups["dimorphic_male_pip10"]
         pip10_r = float(self.a[pip_idx].topk(min(2, pip_idx.numel())).values.mean().item()) if pip_idx.numel() > 0 else 0.0
         p1_r = self.group_mean_rate("dimorphic_male_p1")
@@ -840,6 +837,17 @@ class FullConnectomeFlyNCA(nn.Module):
         # Second channel carries live DLM vs DVM indirect power muscle differential for wing song vibration
         dlm_dvm_diff = (dlm_l - dvm_l) + (b_l - i_l)
         wing_song = torch.tensor([song_amp, dlm_dvm_diff], device=self.device, dtype=torch.float32)
+
+        # Flight drive is active ONLY when bilateral DLM/DVM power muscles fire together and the fly is NOT in ground courtship song!
+        bilat_flight = (dlm_r + dvm_r) > 0.35 and (dlm_l + dvm_l) > 0.35 and (song_amp == 0.0)
+        w_l = (dlm_l + dvm_l) if bilat_flight else 0.0
+        w_r = (dlm_r + dvm_r) if bilat_flight else 0.0
+        wing_drive = torch.tensor([min(1.0, w_l), min(1.0, w_r)], device=self.device, dtype=torch.float32)
+        wing_pitch = torch.tensor(
+            [max(-1.0, min(1.0, (dlm_l - dvm_l) + (b_l - i_l))), max(-1.0, min(1.0, (dlm_r - dvm_r) + (b_r - i_r)))],
+            device=self.device,
+            dtype=torch.float32,
+        )
 
         h_l = self.group_mean_rate("mn_haltere_left")
         h_r = self.group_mean_rate("mn_haltere_right")
@@ -855,7 +863,8 @@ class FullConnectomeFlyNCA(nn.Module):
         neck_rpy = torch.tensor([n_roll, n_pitch, n_yaw], device=self.device, dtype=torch.float32).clamp(-1.0, 1.0)
 
         per_val = min(1.0, 2.2 * (self.group_mean_rate("mn_proboscis_per") + 0.5 * self.group_mean_rate("mn_pharynx_pump")))
-        jump_val = min(1.0, 2.5 * self.group_mean_rate("dn_gf_dnp01"))
+        gf_r = self.group_mean_rate("dn_gf_dnp01")
+        jump_val = min(1.0, 2.5 * gf_r) if (gf_r > 0.55 and song_amp == 0.0) else 0.0
         ovi_curl = min(1.0, 2.0 * self.group_mean_rate("eff_oviposition_uterus"))
 
         return MotorOut(

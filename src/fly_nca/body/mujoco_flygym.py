@@ -85,6 +85,7 @@ class MuJoCoFlyBodyAdapter:
         self.crop_stretch: float = 0.2
         self.plumes: list[OdorPlume3D] = []
         self.last_motor: MotorOut = MotorOut.zeros(device=dev, dtype=dtype)
+        self.smoothed_leg_drive = torch.zeros((6, 4), device=dev, dtype=dtype)
 
     @property
     def head_world_rpy(self) -> torch.Tensor:
@@ -158,11 +159,25 @@ class MuJoCoFlyBodyAdapter:
     def apply_motor_to_mujoco(self, motor: MotorOut | None = None, step_idx: int = 0) -> None:
         """Apply MotorOut command to the NeuroMechFly position & adhesion actuators in MuJoCo."""
         m = motor if motor is not None else self.last_motor
+        # Hill-type muscle activation-contraction low-pass filter (tau_muscle ~ 3 ms = 30 x 0.1 ms MuJoCo steps)
+        self.smoothed_leg_drive = 0.92 * self.smoothed_leg_drive + 0.08 * m.leg_joint_drive.to(self.device, dtype=self.dtype)
+        m_smooth = MotorOut(
+            leg_joint_drive=self.smoothed_leg_drive,
+            tarsus_adhesion=m.tarsus_adhesion,
+            wing_drive_lr=m.wing_drive_lr,
+            wing_pitch_lr=m.wing_pitch_lr,
+            wing_song_mode=m.wing_song_mode,
+            haltere_drive=m.haltere_drive,
+            neck_torque_rpy=m.neck_torque_rpy,
+            proboscis_per=m.proboscis_per,
+            jump_ttmn_burst=m.jump_ttmn_burst,
+            abdomen_bend_pitch_yaw=m.abdomen_bend_pitch_yaw,
+        )
         w_song = self.fly_ref.wing_song_active if self.fly_ref is not None else False
         ovi_act = self.fly_ref.oviposition_active if self.fly_ref is not None else False
         ctrl, adh = motor_out_to_neuromechfly_ctrl(
             self.nmf,
-            m,
+            m_smooth,
             wing_song_active=w_song,
             oviposition_active=ovi_act,
             step_idx=step_idx,
@@ -175,16 +190,15 @@ class MuJoCoFlyBodyAdapter:
             pos_th = self.sim.get_body_positions(self.nmf.name)[0]
             cur_z = float(pos_th[2])
             lift_f = 9.85 + max(-2.5, min(3.5, (1.65 - cur_z) * 4.0))
-            # Aerodynamic thrust along the thorax's own 3D forward axis R_th[:, 0]
             fx = 0.45 * float(R_th[0, 0]) * mean_w
             fy = 0.45 * float(R_th[1, 0]) * mean_w
             self.sim.mj_data.xfrc_applied[thorax_id, :3] = [fx, fy, lift_f]
+            self.sim.mj_data.xfrc_applied[thorax_id, 3] = 2.0 * float(R_th[1, 2])
+            self.sim.mj_data.xfrc_applied[thorax_id, 4] = -2.0 * float(R_th[0, 2])
+            self.sim.mj_data.xfrc_applied[thorax_id, 5] = 0.0
         else:
-            self.sim.mj_data.xfrc_applied[thorax_id, :3] = 0.0
-        # Vestibular / campaniform anti-gravity righting torque on roll only; let 6 legs define natural pitch tripod/hexapod!
-        self.sim.mj_data.xfrc_applied[thorax_id, 3] = 2.0 * float(R_th[1, 2])
-        self.sim.mj_data.xfrc_applied[thorax_id, 4] = 0.0
-        self.sim.mj_data.xfrc_applied[thorax_id, 5] = 0.0
+            # Zero external force or torque on the thorax when standing/walking on agar: 100% supported by the 6 legs!
+            self.sim.mj_data.xfrc_applied[thorax_id, :] = 0.0
         self.sim.set_actuator_inputs(self.nmf.name, ActuatorType.POSITION, ctrl)
         self.sim.set_leg_adhesion_states(self.nmf.name, adh)
 
@@ -460,26 +474,32 @@ def motor_out_to_neuromechfly_ctrl(
         tibia_ext = float(lj[leg_i, 2])
         tarsus_flx = float(lj[leg_i, 3])
 
+        # Every NeuroMechFly leg has Jacobian:
+        # - d(x_tarsus5)/d(coxa_pitch) < 0 and d(x_tarsus5)/d(tibia_pitch) < 0 (except lh/rh tibia_pitch > 0)
+        # - d(z_tarsus5)/d(trochanterfemur_pitch) < 0 (-1.34 mm/rad):
+        #   - Swing phase (troch_lift > 0): DECREASE trochanterfemur_pitch (-0.18 * troch_lift) -> lifts foot UP (+z)
+        #   - Stance phase (troch_lift < 0): INCREASE trochanterfemur_pitch (-0.18 * troch_lift > 0) -> presses foot DOWN (-z) onto agar!
         if fg_leg in ("lf", "rf"):
             if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
                 ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += 0.22 * coxa_fwd
             if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += 0.162 - 0.22 * max(0.0, troch_lift)
+                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += 0.162 - 0.18 * troch_lift
             if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.095 - 0.20 * tibia_ext
+                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.095 - 0.18 * coxa_fwd
             if f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= 0.12 * tarsus_flx
+                ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= 0.10 * tarsus_flx
         else:
             hind_plant = -0.05 if fg_leg in ("lh", "rh") else 0.0
+            tibia_sign = 1.0 if fg_leg in ("lh", "rh") else -1.0
             if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
-                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] -= 0.22 * coxa_fwd
+                ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += 0.22 * coxa_fwd
             if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
                 jump_push = 0.45 * float(motor.jump_ttmn_burst) if fg_leg in ("lm", "rm") else 0.0
-                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += hind_plant - 0.20 * max(0.0, troch_lift) - jump_push
+                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += hind_plant - 0.18 * troch_lift + jump_push
             if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.20 * tibia_ext
+                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.18 * tibia_sign * coxa_fwd
             if f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= 0.12 * tarsus_flx
+                ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= 0.10 * tarsus_flx
 
     # 2. Neck 3D gimbal (roll, pitch, yaw)
     neck = motor.neck_torque_rpy.detach().cpu().numpy()
@@ -581,10 +601,10 @@ def run_mujoco_colony_and_export_viewer(
     """Run the 189,766-cell Fly-NCA colony coupled to MuJoCo / FlyGym (`NeuroMechFly`) and export HTML viewer."""
     spawner = FlySpawner(seed=seed, device=device)
     flies: list[SpawnedFly] = [
-        spawner.spawn_fly(sex="F", foraging_allele="rover", pos_xyz=(0.0038, 0.0010, 0.0), yaw_rad=-2.8),
-        spawner.spawn_fly(sex="M", foraging_allele="sitter", pos_xyz=(-0.0038, -0.0008, 0.0), yaw_rad=0.25),
-        spawner.spawn_fly(sex="F", foraging_allele="sitter", pos_xyz=(0.0010, -0.0040, 0.0), yaw_rad=1.8),
-        spawner.spawn_fly(sex="M", foraging_allele="rover", pos_xyz=(-0.0036, 0.0034, 0.0), yaw_rad=-0.7),
+        spawner.spawn_fly(sex="F", foraging_allele="rover", pos_xyz=(0.0038, 0.0010, 0.0), yaw_rad=-2.88),
+        spawner.spawn_fly(sex="M", foraging_allele="sitter", pos_xyz=(-0.0038, -0.0008, 0.0), yaw_rad=0.21),
+        spawner.spawn_fly(sex="F", foraging_allele="sitter", pos_xyz=(0.0010, -0.0040, 0.0), yaw_rad=1.81),
+        spawner.spawn_fly(sex="M", foraging_allele="rover", pos_xyz=(-0.0036, 0.0034, 0.0), yaw_rad=-0.75),
     ][: max(2, int(n_founders))]
 
     colony = MultiFlySocialArena3D(flies=flies, spawner=spawner)
@@ -769,16 +789,16 @@ def run_mujoco_colony_and_export_viewer(
         snaps = colony.step_population(frames=1, enable_ontogeny_and_reproduction=True)
         history_frames.append(snaps)
 
-        # Synchronize MuJoCo world time with Fly-NCA cognitive frame time (1 cognitive frame = 4.038 ms = 2 x 2.0 ms MuJoCo steps!)
-        for sub_k in range(2):
-            global_sub = step_i * 2 + sub_k
+        # Synchronize MuJoCo world time with Fly-NCA cognitive frame time (1 cognitive frame = 4.038 ms = 40 x 0.1 ms MuJoCo steps!)
+        for sub_k in range(40):
+            global_sub = step_i * 40 + sub_k
             for f in colony.flies:
                 if isinstance(f.arena, MuJoCoFlyBodyAdapter):
                     f.arena.apply_motor_to_mujoco(step_idx=global_sub)
             sim.step()
             for f in colony.flies:
                 if isinstance(f.arena, MuJoCoFlyBodyAdapter):
-                    f.arena.sync_from_mujoco(full_proprioception=(sub_k == 1))
+                    f.arena.sync_from_mujoco(full_proprioception=(sub_k == 39))
 
         # Update dynamic 3D segmented geoms for any real F1 offspring (egg -> segmented white maggot larva -> amber pupa)
         # When a G1/G2 pupa ecloses into an adult, bind its 189,766-cell brain to a real 6-legged NeuroMechFly mecha at the pupa's position!
@@ -1198,10 +1218,10 @@ def serve_live_mujoco_colony(
     # Now run the infinite t = 0 -> infinity simulation loop!
     spawner = FlySpawner(seed=seed, device=device)
     flies: list[SpawnedFly] = [
-        spawner.spawn_fly(sex="F", foraging_allele="rover", pos_xyz=(0.0038, 0.0010, 0.0), yaw_rad=-2.8),
-        spawner.spawn_fly(sex="M", foraging_allele="sitter", pos_xyz=(-0.0038, -0.0008, 0.0), yaw_rad=0.25),
-        spawner.spawn_fly(sex="F", foraging_allele="sitter", pos_xyz=(0.0010, -0.0040, 0.0), yaw_rad=1.8),
-        spawner.spawn_fly(sex="M", foraging_allele="rover", pos_xyz=(-0.0036, 0.0034, 0.0), yaw_rad=-0.7),
+        spawner.spawn_fly(sex="F", foraging_allele="rover", pos_xyz=(0.0038, 0.0010, 0.0), yaw_rad=-2.88),
+        spawner.spawn_fly(sex="M", foraging_allele="sitter", pos_xyz=(-0.0038, -0.0008, 0.0), yaw_rad=0.21),
+        spawner.spawn_fly(sex="F", foraging_allele="sitter", pos_xyz=(0.0010, -0.0040, 0.0), yaw_rad=1.81),
+        spawner.spawn_fly(sex="M", foraging_allele="rover", pos_xyz=(-0.0036, 0.0034, 0.0), yaw_rad=-0.75),
     ][: max(2, int(n_founders))]
     colony = MultiFlySocialArena3D(flies=flies, spawner=spawner)
 
@@ -1383,16 +1403,18 @@ def serve_live_mujoco_colony(
         snaps = []
         for _ in range(n_brain_frames):
             snaps = colony.step_population(frames=1, enable_ontogeny_and_reproduction=True)
-            # Unified Clock: 1 cognitive frame (4.038 ms) = 2 MuJoCo physics steps (2 x 2.0 ms = 4.0 ms)!
-            for sub_k in range(2):
-                global_sub = step_i * 2 + sub_k
+            # Unified Clock: 1 cognitive frame (4.038 ms) = 40 MuJoCo physics steps (40 x 0.1 ms = 4.0 ms)!
+            for sub_k in range(40):
+                global_sub = step_i * 40 + sub_k
                 for f in colony.flies:
                     if isinstance(f.arena, MuJoCoFlyBodyAdapter):
                         f.arena.apply_motor_to_mujoco(step_idx=global_sub)
                 sim.step()
+                if passive_viewer is not None and sub_k % 20 == 0:
+                    passive_viewer.sync()
                 for f in colony.flies:
                     if isinstance(f.arena, MuJoCoFlyBodyAdapter):
-                        f.arena.sync_from_mujoco(full_proprioception=(sub_k == 1))
+                        f.arena.sync_from_mujoco(full_proprioception=(sub_k == 39))
             step_i += 1
         if passive_viewer is not None:
             passive_viewer.sync()
