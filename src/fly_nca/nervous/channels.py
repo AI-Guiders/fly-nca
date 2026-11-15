@@ -9,6 +9,7 @@ class ImpulseChannel(StrEnum):
     """Substrate-wide nervous and developmental channels across embryogenesis, morphogenesis, and 4.038 ms frames."""
 
     EMBRYOGENESIS_SYNCYTIUM = "embryogenesis_syncytium"
+    GENE_ONTOGENY_AUTOMATON = "gene_ontogeny_automaton"
     MORPHOGENESIS_TWO_WAVE = "morphogenesis_two_wave"
     PAN_CONNECTOME_WAVE = "pan_connectome_wave"
     COGNITIVE_FRAME = "cognitive_frame"

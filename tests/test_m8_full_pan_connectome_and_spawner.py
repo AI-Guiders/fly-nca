@@ -294,3 +294,14 @@ def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
     assert tel_ey.vis.lc4_lplc2_looming == 0.0
     assert tel_gehring.vis.lc4_lplc2_looming > 0.8
     assert float(fly_ubx_ko.vnc_autopilot.ablation_mask[:6].sum().item()) == 0.0
+
+    # 7. Nervous Impulse Trace records GENE_ONTOGENY_AUTOMATON waves across OOCYTE_SHEET -> BLASTODERM_2D -> NEUROECTODERM -> CONNECTOME_CAM
+    from fly_nca.nervous import DebugLevel, ImpulseChannel, ImpulseRecorder
+
+    rec = ImpulseRecorder(level=DebugLevel.FULL)
+    rec.begin_tick(1, time_ms=0.0)
+    _ = run_gene_ontogeny_automaton(gehring_pax6_graph, recorder=rec)
+    imp_rec = rec.last_impulses()[-1]
+    assert imp_rec.header["channel"] == ImpulseChannel.GENE_ONTOGENY_AUTOMATON.value
+    assert imp_rec.header["organs_touched"] == ["OOCYTE_SHEET", "BLASTODERM_2D", "NEUROECTODERM", "CONNECTOME_CAM"]
+    assert len(imp_rec.events) == 4

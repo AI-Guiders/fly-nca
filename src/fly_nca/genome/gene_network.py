@@ -303,8 +303,12 @@ def run_gene_ontogeny_automaton(
     syncytial_steps: int = 24,
     max_division_cycles: int = 16,
     device: torch.device | str = "cpu",
+    recorder: object | None = None,
 ) -> GeneOntogenyResult:
     """Run the 2D embryonic morphogen + cell-division automaton with zero gene-name strings."""
+    from fly_nca.nervous import BiologicalPort, ImpulseChannel, ImpulseOutcome, ImpulseRecorder, impulse_recorder
+
+    rec = recorder if isinstance(recorder, ImpulseRecorder) else impulse_recorder()
     dev = torch.device(device)
     n_g = len(gene_graph.genes)
     w_ap, w_dv, w_temp, w_gen, w_rep, func_mask = gene_graph.compile_unweighted_matrices(dev)
@@ -444,6 +448,59 @@ def run_gene_ontogeny_automaton(
 
     raw_syn = (k_expr @ k_assoc) @ q_expr.t()
     syn_weights = raw_syn * nt_sign.unsqueeze(1)
+
+    with rec.channel(ImpulseChannel.GENE_ONTOGENY_AUTOMATON) as imp:
+        knocked_out = [g.name for g in gene_graph.genes if not g.functional]
+        imp.activate(
+            "oocyte.maternal_2d_poles",
+            organ="OOCYTE_SHEET",
+            port=BiologicalPort.PORT_MATERNAL_MRNA,
+            inputs={
+                "grid_ap": grid_ap,
+                "grid_dv": grid_dv,
+                "n_genes": n_g,
+                "knocked_out_loci": knocked_out,
+            },
+        )
+        ap_cols = [i for i, g in enumerate(gene_graph.genes) if g.tf_axis == "ap"]
+        ap_potentials = [
+            {
+                "id": gene_graph.genes[i].name,
+                "score": int((all_cells[:, i] > 0.35).sum().item()),
+            }
+            for i in ap_cols
+        ]
+        imp.score(
+            "blastoderm.ap_selector_domains",
+            organ="BLASTODERM_2D",
+            port=BiologicalPort.PORT_PIONEER_TF,
+            potentials=ap_potentials,
+            inputs={"syncytial_steps": syncytial_steps},
+        )
+        imp.threshold(
+            "neuroblast.mitotic_division_cascade",
+            organ="NEUROECTODERM",
+            port=BiologicalPort.PORT_PIONEER_TF,
+            reason=f"Completed {len(divisions_log)} division cycles -> {all_cells.shape[0]} differentiated cells",
+            inputs={"divisions_per_step": divisions_log, "n_cells": int(all_cells.shape[0])},
+        )
+        cam_potentials = [
+            {
+                "id": gene_graph.genes[i].name,
+                "score": int((all_cells[:, i] > 0.35).sum().item()),
+            }
+            for i in cam_key_cols[:6]
+        ]
+        n_syn_edges = int((syn_weights.abs() > 0.01).sum().item())
+        imp.route(
+            "synaptogenesis.spr_kd_cam_lock_and_key",
+            organ="CONNECTOME_CAM",
+            port=BiologicalPort.PORT_CAM_DIP_DPR,
+            selected=[p["id"] for p in cam_potentials if p["score"] > 0],
+            potentials=cam_potentials,
+            inputs={"n_synaptic_pairs_above_0p01": n_syn_edges},
+        )
+        imp.finish(outcome=ImpulseOutcome.ADULT_ECLOSION_READY)
 
     return GeneOntogenyResult(
         n_cells=all_cells.shape[0],
