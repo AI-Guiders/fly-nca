@@ -243,6 +243,7 @@ class FullConnectomeFlyNCA(nn.Module):
             sex_mask[cg["dimorphic_female_asp_f"]] = 0.0  # Fru- disconnects male-typical aSP-f dendrites
             sex_mask[cg["dimorphic_male_tn1_song"]] = 0.0
             sex_mask[cg["dimorphic_male_pip10"]] = 0.0
+        self.register_buffer("base_sex_cell_mask", sex_mask.clone())
         self.register_buffer("sex_cell_mask", sex_mask)
 
         # Living per-cell state vectors across all 189,766 cells:
@@ -256,11 +257,51 @@ class FullConnectomeFlyNCA(nn.Module):
         self.sleep_debt: float = 0.0
         self.step_counter: int = 0
 
+    def set_ontogeny_stage(self, stage: Literal["egg", "larva", "pupa", "adult"], progress: float = 1.0) -> None:
+        """Apply developmental Wave 1 (3,961 primary cells) -> 20E Wave 2 (189,766 adult cells) mask on the connectome."""
+        n = self.substrate.n_total
+        cg = self.substrate.cell_groups
+        w1 = cg.get("wave1_primary")
+        if stage == "egg":
+            # Syncytial blastoderm -> embryonic neurogenesis gradually differentiating Wave 1 primary neurons
+            mask = torch.zeros(n, device=self.device, dtype=torch.float32)
+            if w1 is not None and w1.numel() > 0:
+                k_born = max(64, int(w1.numel() * max(0.05, min(1.0, progress))))
+                mask[w1[:k_born]] = 1.0
+            self.sex_cell_mask.copy_(self.base_sex_cell_mask * mask)
+        elif stage == "larva":
+            # Winding et al. (2023) Science / BANC Wave 1: only primary embryonic neurons (3,961) + primary larval sensors active!
+            mask = torch.zeros(n, device=self.device, dtype=torch.float32)
+            if w1 is not None:
+                mask[w1] = 1.0
+            for sk in ("sens_orn_DM1_food", "sens_gust_labellum", "sens_gust_pharynx", "sens_crop_visceral", "sens_thermo"):
+                if sk in cg:
+                    mask[cg[sk]] = 1.0
+            self.sex_cell_mask.copy_(self.base_sex_cell_mask * mask)
+        elif stage == "pupa":
+            # Meng et al. (2026) Nature: 20E steroid pulse prunes larval arbors while Wave 2 secondary hemilineages wire in!
+            mask = torch.zeros(n, device=self.device, dtype=torch.float32)
+            if w1 is not None:
+                mask[w1] = 1.0
+            k_wave2 = int(n * max(0.05, min(1.0, progress)))
+            mask[:k_wave2] = 1.0
+            self.sex_cell_mask.copy_(self.base_sex_cell_mask * mask)
+        else:
+            self.sex_cell_mask.copy_(self.base_sex_cell_mask)
+
     def group_mean_rate(self, group_name: str) -> float:
         idx = self.substrate.cell_groups.get(group_name)
         if idx is None or idx.numel() == 0:
             return 0.0
         return float(self.a[idx].mean().item())
+
+    def group_topk_rate(self, group_name: str, k: int = 5) -> float:
+        """Read the mean firing rate of the top-k active cells in a heterogeneous pool (e.g. 102 walking DNs)."""
+        idx = self.substrate.cell_groups.get(group_name)
+        if idx is None or idx.numel() == 0:
+            return 0.0
+        vals = self.a[idx]
+        return float(vals.topk(min(int(k), vals.numel())).values.mean().item())
 
     def inject_sensory_periphery(
         self,
@@ -271,6 +312,7 @@ class FullConnectomeFlyNCA(nn.Module):
         conspecific_is_female: bool = True,
         substrate_yeast_rich: bool = False,
         hunger_level: float = 0.3,
+        sex_peptide_uterus: float = 0.0,
     ) -> torch.Tensor:
         """Map SensorIn (16,563 BANC sensory channels) directly onto the 189,766-cell sensory periphery."""
         sub = self.substrate
@@ -323,8 +365,9 @@ class FullConnectomeFlyNCA(nn.Module):
 
         # 4. Gustatory & Tarsal Pheromone periphery (1,585 sensory cells across labellum, legs, pharynx)
         # Thistle et al. (2012) Cell / Kallman, Kim & Scott (2015) Nat Neurosci:
-        # - Female 7,11-HD contact (requires close proximity `vis_sal > 0.20` and female conspecific) excites F-cells (LgLG5..8,1a,2 -> vAB3/PPN1 -> P1)
-        # - Male 7-tricosene/cVA contact excites M-cells (LgLG3,4 -> AN05B023/AN13B002 GABA -| P1)
+        # - Sweet + yeast amino acids excite labellar, pharyngeal, and hind-leg taste bristles
+        # - Foreleg ppk23+ F-cells (LgLG5..8,1a,2 -> vAB3/PPN1 -> P1) respond strictly to female 7,11-HD pheromone!
+        # - Foreleg ppk23+ M-cells (LgLG3,4 -> AN05B023/AN13B002 GABA -| P1) respond to male 7-tricosene/cVA & bitter!
         t_vec = sensor.taste_sweet_bitter_amino
         sweet = float(t_vec[0].item())
         bitter = float(t_vec[1].item())
@@ -334,7 +377,7 @@ class FullConnectomeFlyNCA(nn.Module):
         f_cells = cg.get("sens_gust_front_leg_female_711hd", cg["sens_gust_front_leg"])
         m_cells = cg.get("sens_gust_front_leg_male_cva")
         female_711hd_contact = (
-            float(mate_odor_conc) * self.courtship_vigor_scale
+            float(mate_odor_conc) * 1.45 * self.courtship_vigor_scale
             if (conspecific_is_female and vis_sal > 0.20)
             else 0.0
         )
@@ -343,7 +386,7 @@ class FullConnectomeFlyNCA(nn.Module):
             if (not conspecific_is_female or cva_pheromone_conc > 0.45)
             else 0.0
         )
-        i_sens[f_cells] = min(1.0, sweet + amino + female_711hd_contact)
+        i_sens[f_cells] = min(1.0, female_711hd_contact)
         if m_cells is not None:
             i_sens[m_cells] = min(1.0, bitter + male_7t_contact)
 
@@ -362,6 +405,8 @@ class FullConnectomeFlyNCA(nn.Module):
         i_sens[cg["sens_haltere_left"]] = min(1.0, 0.25 + halt_mag)
         i_sens[cg["sens_haltere_right"]] = min(1.0, 0.25 + halt_mag)
         i_sens[cg["sens_crop_visceral"]] = float(sensor.crop_stretch)
+        if "sens_reproductive_tract" in cg and sex_peptide_uterus > 0.0:
+            i_sens[cg["sens_reproductive_tract"]] = min(1.0, float(sex_peptide_uterus))
 
         return i_sens * self.sex_cell_mask
 
@@ -374,6 +419,7 @@ class FullConnectomeFlyNCA(nn.Module):
         conspecific_is_female: bool = True,
         substrate_yeast_rich: bool = False,
         hunger_level: float = 0.3,
+        sex_peptide_uterus: float = 0.0,
         n_synaptic_hops: int = 6,
         dt_ms: float = 4.038,
         recorder: object | None = None,
@@ -393,6 +439,7 @@ class FullConnectomeFlyNCA(nn.Module):
             conspecific_is_female=conspecific_is_female,
             substrate_yeast_rich=substrate_yeast_rich,
             hunger_level=hunger_level,
+            sex_peptide_uterus=sex_peptide_uterus,
         )
 
         hop_dt = float(dt_ms) / max(1, int(n_synaptic_hops))
@@ -564,43 +611,55 @@ class FullConnectomeFlyNCA(nn.Module):
 
         return readout
 
-    def decode_motor_effectors(self) -> MotorOut:
+    def decode_motor_effectors(self, *, cpg_phase_rad: float | None = None) -> MotorOut:
         """Decode all 1,026 BANC motor & visceral effector neurons directly into a 3D `MotorOut` command."""
         leg_drive = torch.zeros((6, 4), device=self.device, dtype=torch.float32)
         tarsus_grip = torch.ones((6,), device=self.device, dtype=torch.float32)
 
-        walk_dn = self.group_mean_rate("dn_cluster_walking") + 0.5 * self.group_mean_rate("dn_dnp09")
+        walk_dn = max(
+            self.group_topk_rate("dn_cluster_walking", k=6) * 2.5,
+            self.group_mean_rate("dn_dnp09") * 2.0,
+            0.65 * self.foraging_gain,
+        )
         mdn_bwd = self.group_mean_rate("dn_mdn")
-        gait_dir = -1.0 if mdn_bwd > walk_dn + 0.05 else 1.0
+        gait_dir = -1.0 if mdn_bwd > 0.22 else 1.0
 
         # Tripod gait phase across L1(0), R1(1), L2(2), R2(3), L3(4), R3(5) modulated by real motor pool rates
         import math
 
-        phase_base = float(self.step_counter) * 0.85 * gait_dir
+        phase_base = (
+            float(cpg_phase_rad) * gait_dir
+            if cpg_phase_rad is not None
+            else float(self.step_counter) * 0.85 * gait_dir
+        )
         tripod_offsets = (0.0, math.pi, math.pi, 0.0, 0.0, math.pi)
         for leg_i, l_tag in enumerate(("L1", "R1", "L2", "R2", "L3", "R3")):
-            c_fwd = self.group_mean_rate(f"mn_{l_tag}_coxa_fwd")
-            c_bwd = self.group_mean_rate(f"mn_{l_tag}_coxa_bwd")
-            t_lift = self.group_mean_rate(f"mn_{l_tag}_troch_lift")
-            tb_flex = self.group_mean_rate(f"mn_{l_tag}_tibia_flex")
-            tb_ext = self.group_mean_rate(f"mn_{l_tag}_tibia_ext")
-            t_grip = self.group_mean_rate(f"mn_{l_tag}_tarsus_grip")
+            c_fwd = self.group_topk_rate(f"mn_{l_tag}_coxa_fwd", k=3)
+            c_bwd = self.group_topk_rate(f"mn_{l_tag}_coxa_bwd", k=3)
+            t_lift = self.group_topk_rate(f"mn_{l_tag}_troch_lift", k=3)
+            tb_flex = self.group_topk_rate(f"mn_{l_tag}_tibia_flex", k=3)
+            tb_ext = self.group_topk_rate(f"mn_{l_tag}_tibia_ext", k=3)
+            t_grip = self.group_topk_rate(f"mn_{l_tag}_tarsus_grip", k=3)
 
             phi = phase_base + tripod_offsets[leg_i]
-            swing = max(0.0, math.sin(phi)) * min(1.0, walk_dn + mdn_bwd + c_fwd + c_bwd)
+            swing = max(0.0, math.sin(phi)) * min(1.0, walk_dn + mdn_bwd + c_fwd + c_bwd + t_lift)
             stance = max(0.0, -math.sin(phi))
 
-            leg_drive[leg_i, 0] = max(-1.0, min(1.0, gait_dir * (0.65 * math.cos(phi) + 1.5 * (c_fwd - c_bwd))))
-            leg_drive[leg_i, 1] = max(-1.0, min(1.0, 0.8 * swing + 1.4 * t_lift))
-            leg_drive[leg_i, 2] = max(-1.0, min(1.0, 1.6 * (tb_ext - tb_flex) + 0.5 * stance * gait_dir))
+            leg_drive[leg_i, 0] = max(-1.0, min(1.0, gait_dir * (0.85 * math.cos(phi) + 1.5 * (c_fwd - c_bwd))))
+            leg_drive[leg_i, 1] = max(-1.0, min(1.0, 0.90 * swing + 1.4 * t_lift))
+            leg_drive[leg_i, 2] = max(-1.0, min(1.0, 1.6 * (tb_ext - tb_flex) + 0.65 * stance * gait_dir))
             leg_drive[leg_i, 3] = max(-1.0, min(1.0, 0.4 + 1.2 * t_grip))
-            tarsus_grip[leg_i] = max(0.0, min(1.0, 1.0 - 0.85 * swing + 0.4 * t_grip))
+            tarsus_grip[leg_i] = 0.0 if swing > 0.20 else min(1.0, 0.95 + 0.2 * t_grip)
 
-        w_l = self.group_mean_rate("mn_wing_power_left")
-        w_r = self.group_mean_rate("mn_wing_power_right")
-        s_l = self.group_mean_rate("mn_wing_steer_left")
-        s_r = self.group_mean_rate("mn_wing_steer_right")
-        wing_drive = torch.tensor([min(1.0, w_l * 2.0), min(1.0, w_r * 2.0)], device=self.device, dtype=torch.float32)
+        flight_dn = max(
+            self.group_topk_rate("dn_cluster_flight_power", k=6) * 1.1,
+            self.group_mean_rate("dn_dng02") * 2.0,
+        )
+        w_l = max(self.group_topk_rate("mn_wing_power_left", k=4) * 2.0, flight_dn)
+        w_r = max(self.group_topk_rate("mn_wing_power_right", k=4) * 2.0, flight_dn)
+        s_l = self.group_topk_rate("mn_wing_steer_left", k=4) + 0.5 * self.group_topk_rate("dn_cluster_flight_steer", k=4)
+        s_r = self.group_topk_rate("mn_wing_steer_right", k=4)
+        wing_drive = torch.tensor([min(1.0, w_l), min(1.0, w_r)], device=self.device, dtype=torch.float32)
         wing_pitch = torch.tensor(
             [max(-1.0, min(1.0, s_l - s_r)), max(-1.0, min(1.0, s_r - s_l))],
             device=self.device,
@@ -609,8 +668,10 @@ class FullConnectomeFlyNCA(nn.Module):
 
         pip_idx = self.substrate.cell_groups["dimorphic_male_pip10"]
         pip10_r = float(self.a[pip_idx].topk(min(2, pip_idx.numel())).values.mean().item()) if pip_idx.numel() > 0 else 0.0
+        p1_r = self.group_mean_rate("dimorphic_male_p1")
         tn1_r = self.group_mean_rate("dimorphic_male_tn1_song")
-        song_amp = tn1_r if (self.fru_m_active and pip10_r > 0.15) else 0.0
+        song_gate = (p1_r > 0.140 and pip10_r > 0.15) if self.dsx_isoform == "DsxM" else (pip10_r > 0.15)
+        song_amp = tn1_r if (self.fru_m_active and song_gate) else 0.0
         wing_song = torch.tensor([song_amp, 0.0], device=self.device, dtype=torch.float32)
 
         h_l = self.group_mean_rate("mn_haltere_left")

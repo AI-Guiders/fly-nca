@@ -509,7 +509,8 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
         "sens_bristle_all": _idx(is_sens & (cc == "bristle_neuron")),
         "sens_haltere_left": _idx(is_sens & (bps == "haltere") & (b_side == "left")),
         "sens_haltere_right": _idx(is_sens & (bps == "haltere") & (b_side == "right")),
-        "sens_crop_visceral": _idx(is_sens & (cf == "visceral_mechanosensation")),
+        "sens_crop_visceral": _idx(is_sens & (csc == "anterior_digestive_tract_multidendritic_neuron")),
+        "sens_reproductive_tract": _idx(is_sens & (cc == "reproductive_tract_sensory_neuron")),
         "sens_thermo": _idx(is_sens & (cf == "thermosensory")),
         "sens_hygro": _idx(is_sens & (cf == "hygrosensory")),
         "sens_nociception": _idx(is_sens & (cf == "nociception")),
@@ -590,8 +591,9 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
         "mn_pharynx_pump": _idx((bpe == "pharynx") | (cf == "pharynx_motor")),
         "mn_crop_visceral": _idx(bpe.isin(["crop", "digestive_tract"])),
         "mn_ttmn_jump": _idx(ptt == "tergotrochanter_extensor_muscle"),
-        "eff_oviposition_uterus": _idx((cf == "ovulation") | bpe.isin(["uterus", "reproductive_tract"]) | (csc == "abd_Dsx_OA")),
+        "eff_oviposition_uterus": _idx((sc == "motor") & (bpe == "uterus")),
         "eff_endocrine_ipc_akh": _idx(csc.isin(["retrocerebral_complex_neurosecretory_cell", "corpus_allatum_neurosecretory_cell"])),
+        "wave1_primary": _idx(hl_banc.isin(["putative_primary", "primary"])),
     }
 
     # Per-leg motor pools (L1..R3)

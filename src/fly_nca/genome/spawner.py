@@ -306,6 +306,8 @@ class FlySpawner:
             beh = "FORAGING_ROVER" if ind_genome.foraging_allele == "rover" else "FORAGING_SITTER"
             prog, mass, hapf = 1.0, 1.20, 48.0
 
+        full_conn.set_ontogeny_stage(life_stage, prog)
+
         return SpawnedFly(
             genome=ind_genome,
             full_connectome=full_conn,
@@ -340,11 +342,22 @@ class FlySpawner:
 
 @dataclass
 class MultiFlySocialArena3D:
-    """Shared 3D arena hosting a multi-generational Drosophila colony (egg -> larva -> pupa -> adult)."""
+    """Shared 3D arena hosting a multi-generational Drosophila colony (egg -> larva -> pupa -> adult).
+
+    External Environment Contract:
+    The arena ONLY advances time (`dt = 4.038 ms`) and supplies physical environmental fields
+    (`temperature_c`, `wind_world_xyz`, `surface_texture_freq`, `food_yeast_radius_m`, odor plumes,
+    acoustic vibrations, and 3D physical contact). Every behavior, courtship song, receptivity,
+    and uterus motor contraction (`eff_oviposition_uterus`) is computed purely inside each fly's
+    autonomous 189,766-cell connectome!
+    """
 
     flies: list[SpawnedFly]
     shared_plumes: list[OdorPlume3D] = field(default_factory=list)
     wind_world_xyz: tuple[float, float, float] = (0.12, 0.0, 0.0)
+    ambient_temperature_c: float = 25.0
+    agar_texture_freq: float = 8.0
+    food_yeast_radius_m: float = 0.008
     time_ms: float = 0.0
     spawner: FlySpawner | None = None
     max_colony_size: int = 24
@@ -379,28 +392,41 @@ class MultiFlySocialArena3D:
             for i, f_i in enumerate(self.flies):
                 f_i.arena.plumes = list(self.shared_plumes)
                 f_i.arena.wind_world_xyz = self.wind_world_xyz
+                f_i.arena.ambient_temperature_c = self.ambient_temperature_c
+                f_i.arena.surface_texture_freq = self.agar_texture_freq
                 xi, yi, zi = f_i.pos_xyz
                 dist_to_cup = math.hypot(xi, yi)
-                on_yeast_cup = dist_to_cup < 0.008
+                on_yeast_cup = dist_to_cup < self.food_yeast_radius_m
 
-                # --- Ontogenetic Stages L0-L1: EGG -> LARVA (Wave 1) -> PUPA (20E Wave 2) -> ADULT ---
+                # --- Ontogenetic Stages L0-L1: EGG -> LARVA (Wave 1, 3,961 primary BANC cells) -> PUPA (20E Wave 2) -> ADULT ---
                 if f_i.life_stage == "egg":
-                    f_i.stage_progress = min(1.0, f_i.stage_progress + 0.35)
+                    f_i.stage_progress = min(1.0, f_i.stage_progress + 0.50)
+                    f_i.full_connectome.set_ontogeny_stage("egg", f_i.stage_progress)
                     f_i.current_behavior = "EGG_SYNCYTIUM_BLASTODERM"
+                    n_egg_cells = int(f_i.full_connectome.sex_cell_mask.sum().item())
                     if f_i.stage_progress >= 1.0:
                         _ = f_i.composition.genome.run_syncytial_embryogenesis_nca(n_positions=64)
                         f_i.life_stage = "larva"
                         f_i.stage_progress = 0.0
                         f_i.larval_mass_mg = 0.35
+                        f_i.full_connectome.set_ontogeny_stage("larva", 0.0)
                         f_i.current_behavior = "LARVA_WAVE1_CRAWLING"
                         self.colony_events.append(
                             {"time_ms": round(self.time_ms, 2), "event": "HATCH_EGG_TO_LARVA", "fly_id": f_i.genome.fly_id}
                         )
-                    snapshots.append(self._build_snapshot(f_i, n_active=64))
+                    snapshots.append(self._build_snapshot(f_i, n_active=n_egg_cells))
                     continue
 
                 if f_i.life_stage == "larva":
-                    # Crawling Wave 1 larva (~3,016 primary cells, zero neck bottleneck): chemotaxis toward yeast cup
+                    # Crawling Wave 1 larva running on its 3,961 empirical BANC primary cells (`wave1_primary`):
+                    f_i.full_connectome.set_ontogeny_stage("larva", f_i.stage_progress)
+                    sensor_l = f_i.arena.step_physics(MotorOut.zeros(device=f_i.arena.pos_xyz.device), dt_ms=0.0)
+                    conn_l = f_i.full_connectome.step_full_connectome(
+                        sensor_l,
+                        substrate_yeast_rich=on_yeast_cup,
+                        hunger_level=0.8,
+                        n_synaptic_hops=4,
+                    )
                     dx, dy = -xi, -yi
                     d_norm = math.hypot(dx, dy) + 1e-6
                     step_m = 0.0004 * f_i.genome.foraging_locomotion_gain
@@ -417,6 +443,7 @@ class MultiFlySocialArena3D:
                         f_i.life_stage = "pupa"
                         f_i.pupal_hapf = 6.0
                         f_i.stage_progress = 0.125
+                        f_i.full_connectome.set_ontogeny_stage("pupa", f_i.stage_progress)
                         f_i.current_behavior = "PUPA_20E_METAMORPHOSIS"
                         self.colony_events.append(
                             {
@@ -426,16 +453,18 @@ class MultiFlySocialArena3D:
                                 "larval_mass_mg": f_i.larval_mass_mg,
                             }
                         )
-                    snapshots.append(self._build_snapshot(f_i, n_active=f_i.composition.developed.n_wave1_primary))
+                    snapshots.append(self._build_snapshot(f_i, n_active=conn_l.n_active_cells, conn_out=conn_l))
                     continue
 
                 if f_i.life_stage == "pupa":
                     # Meng et al. (2026) Nature pupal stages: 6 -> 24 -> 36 -> 48 h.a.p.f.
                     # Wave 1 pruning + Wave 2 (dati+) secondary neurogenesis & CAM (DIP/Dpr + Beat/Side) tract wiring
-                    f_i.pupal_hapf = min(48.0, f_i.pupal_hapf + 14.0)
+                    f_i.pupal_hapf = min(48.0, f_i.pupal_hapf + 21.0)
                     f_i.stage_progress = min(1.0, f_i.pupal_hapf / 48.0)
                     f_i.ecdysone_20e_titer = round(max(0.1, 1.0 - 0.5 * f_i.stage_progress), 3)
+                    f_i.full_connectome.set_ontogeny_stage("pupa", f_i.stage_progress)
                     f_i.current_behavior = "PUPA_20E_METAMORPHOSIS"
+                    n_pupa_cells = int(f_i.full_connectome.sex_cell_mask.sum().item())
                     if f_i.pupal_hapf >= 48.0:
                         f_i.composition.developed = develop_fly_from_genome(
                             f_i.composition.genome,
@@ -447,6 +476,7 @@ class MultiFlySocialArena3D:
                         f_i.life_stage = "adult"
                         f_i.stage_progress = 1.0
                         f_i.ecdysone_20e_titer = 0.0
+                        f_i.full_connectome.set_ontogeny_stage("adult", 1.0)
                         f_i.current_behavior = (
                             "FORAGING_ROVER" if f_i.genome.foraging_allele == "rover" else "FORAGING_SITTER"
                         )
@@ -459,7 +489,7 @@ class MultiFlySocialArena3D:
                                 "generation": f_i.genome.generation,
                             }
                         )
-                    snapshots.append(self._build_snapshot(f_i, n_active=f_i.composition.developed.n_cells))
+                    snapshots.append(self._build_snapshot(f_i, n_active=n_pupa_cells))
                     continue
 
                 # --- Adult Imago (189,766 cells, 6,853,423 5-port synaptic edges) ---
@@ -504,6 +534,8 @@ class MultiFlySocialArena3D:
                     sensor.small_target_salience = max(float(sensor.small_target_salience), 0.75)
 
                 hunger = max(0.0, 1.0 - f_i.composition.hemolymph.sugar_level)
+                # Physical sex-peptide molecule on uterus SPSN receptors is present ONLY if physical copulation occurred!
+                sex_peptide_conc = 0.85 if f_i.is_mated else 0.0
 
                 conn_out = f_i.full_connectome.step_full_connectome(
                     sensor,
@@ -512,119 +544,100 @@ class MultiFlySocialArena3D:
                     conspecific_is_female=neighbor_is_female,
                     substrate_yeast_rich=on_yeast_cup,
                     hunger_level=hunger,
+                    sex_peptide_uterus=sex_peptide_conc,
                 )
                 f_i.last_connectome_readout = conn_out
                 pan_motor = f_i.full_connectome.decode_motor_effectors()
-                _ = f_i.arena.step_physics(pan_motor, dt_ms=0.5)
+                _ = f_i.arena.step_physics(pan_motor, dt_ms=4.038)
 
-                # Coupling between 189,766-cell dimorphic circuits and behavioral state
-                f_i.wing_song_active = False
+                # Read out motor & circuit states directly from the fly's own 189,766-cell connectome!
+                f_i.wing_song_active = float(pan_motor.wing_song_mode[0].item()) > 0.02
+                f_i.oviposition_active = conn_out.female_ovi_oviposition_rate > 0.12
+                f_i.receptivity_score = round(conn_out.female_pc1_receptivity_rate, 4)
                 f_i.boxing_intensity = 0.0
-                f_i.oviposition_active = False
-                f_i.receptivity_score = 0.0
 
-                if f_i.genome.fru_m_active:
-                    if conn_out.male_pip10_song_rate > 0.15 and neighbor_is_female:
-                        f_i.wing_song_active = True
-                        f_i.current_behavior = (
-                            "MALE_COURTSHIP_SONG"
-                            if f_i.genome.dsx_isoform == "DsxM"
-                            else "FEMALE_FRUM_COURTSHIP_SONG"
-                        )
-                        telem.motor.wing_song_mode[0] = float(conn_out.male_tn1_wing_song_rate)
-                    elif nearest_j is not None and not neighbor_is_female and nearest_dist < 0.015:
-                        # Male-male encounter on food patch -> VPM4 OA+Glu boxing escalation
-                        vpm4_drive = (0.75 + 0.25 * cva_conc) / max(0.4, f_i.genome.oaa2r_brake_scale)
-                        mb_agg = f_i.composition.mushroom_body.step_mb(
-                            telem.chem.pn_glomeruli_50,
-                            vpm4_octopamine_drive=min(1.0, vpm4_drive),
-                        )
-                        f_i.boxing_intensity = round(float(mb_agg.aggression_boxing_drive), 4)
-                        f_i.current_behavior = "MALE_BOXING_ESCALATION"
-                    elif telem.motor.proboscis_per > 0.5:
-                        f_i.current_behavior = "FEEDING_PER"
-                    else:
-                        f_i.current_behavior = (
-                            "FORAGING_ROVER" if f_i.genome.foraging_allele == "rover" else "FORAGING_SITTER"
-                        )
+                if f_i.wing_song_active:
+                    f_i.current_behavior = (
+                        "MALE_COURTSHIP_SONG"
+                        if f_i.genome.dsx_isoform == "DsxM"
+                        else "FEMALE_FRUM_COURTSHIP_SONG"
+                    )
+                    telem.motor.wing_song_mode[0] = float(conn_out.male_tn1_wing_song_rate)
+                elif f_i.genome.fru_m_active and nearest_j is not None and not neighbor_is_female and nearest_dist < 0.015:
+                    vpm4_drive = (0.75 + 0.25 * cva_conc) / max(0.4, f_i.genome.oaa2r_brake_scale)
+                    mb_agg = f_i.composition.mushroom_body.step_mb(
+                        telem.chem.pn_glomeruli_50,
+                        vpm4_octopamine_drive=min(1.0, vpm4_drive),
+                    )
+                    f_i.boxing_intensity = round(float(mb_agg.aggression_boxing_drive), 4)
+                    f_i.current_behavior = "MALE_BOXING_ESCALATION"
+                elif f_i.oviposition_active:
+                    f_i.current_behavior = "FEMALE_OVIPOSITION"
+                elif conn_out.female_pc1_receptivity_rate > 0.15:
+                    f_i.current_behavior = "FEMALE_SONG_RECEPTIVITY"
+                elif pan_motor.proboscis_per > 0.25 or telem.motor.proboscis_per > 0.5:
+                    f_i.current_behavior = "FEEDING_PER"
                 else:
-                    # Wild-type Female (X:A=1.0 -> Sxl ON -> Tra ON -> DsxF, Fru-)
-                    if conn_out.female_pc1_receptivity_rate > 0.15 and song_heard > 0.1:
-                        f_i.receptivity_score = round(conn_out.female_pc1_receptivity_rate, 4)
-                        f_i.current_behavior = "FEMALE_SONG_RECEPTIVITY"
-                        if nearest_j is not None and nearest_j.genome.sex == "M":
-                            f_i.is_mated = True
-                            f_i.mate_genome = nearest_j.genome
-                    elif conn_out.female_ovi_oviposition_rate > 0.15 and on_yeast_cup:
-                        f_i.oviposition_active = True
-                        f_i.current_behavior = "FEMALE_OVIPOSITION"
-                        if nearest_j is not None and nearest_j.genome.sex == "M":
-                            f_i.is_mated = True
-                            f_i.mate_genome = nearest_j.genome
-                    elif telem.motor.proboscis_per > 0.5:
-                        f_i.current_behavior = "FEEDING_PER"
-                    else:
-                        f_i.current_behavior = (
-                            "FORAGING_ROVER" if f_i.genome.foraging_allele == "rover" else "FORAGING_SITTER"
-                        )
+                    f_i.current_behavior = (
+                        "FORAGING_ROVER" if f_i.genome.foraging_allele == "rover" else "FORAGING_SITTER"
+                    )
 
-                    # When a mated/courted female activates oviposition (or receptivity + oviDN on yeast cup), lay fertilized F1 egg!
-                    if (
-                        enable_ontogeny_and_reproduction
-                        and f_i.eggs_laid == 0
-                        and on_yeast_cup
-                        and conn_out.female_ovi_oviposition_rate > 0.12
-                        and (f_i.is_mated or (nearest_j is not None and nearest_j.genome.sex == "M"))
-                        and (len(self.flies) + len(new_offspring) < self.max_colony_size)
-                        and self.spawner is not None
-                    ):
-                        pat_genome = f_i.mate_genome or (
-                            nearest_j.genome if nearest_j is not None else f_i.genome
-                        )
-                        child_genome = self.spawner.recombine_genomes(f_i.genome, pat_genome)
-                        egg_pos = (
-                            round(xi + self.spawner.rng.uniform(-0.0040, 0.0040), 5),
-                            round(yi + self.spawner.rng.uniform(-0.0040, 0.0040), 5),
-                            0.0,
-                        )
-                        egg_fly = self.spawner.spawn_fly(
-                            pos_xyz=egg_pos,
-                            life_stage="egg",
-                            genome_override=child_genome,
-                        )
-                        new_offspring.append(egg_fly)
-                        f_i.eggs_laid += 1
-                        self.colony_events.append(
-                            {
-                                "time_ms": round(self.time_ms, 2),
-                                "event": "OVIPOSITION_EGG_LAID",
-                                "mother_id": f_i.genome.fly_id,
-                                "father_id": pat_genome.fly_id,
-                                "egg_id": child_genome.fly_id,
-                                "sex": child_genome.sex,
-                                "generation": child_genome.generation,
-                            }
-                        )
+                # Physical transfer of seminal sex-peptide occurs when a courting male and receptive female are in physical contact
+                if (
+                    not f_i.genome.fru_m_active
+                    and not f_i.is_mated
+                    and conn_out.female_pc1_receptivity_rate > 0.15
+                    and nearest_j is not None
+                    and nearest_j.genome.sex == "M"
+                    and (nearest_j.wing_song_active or (nearest_j.last_connectome_readout is not None and nearest_j.last_connectome_readout.male_pip10_song_rate > 0.15))
+                    and nearest_dist < 0.0095
+                ):
+                    f_i.is_mated = True
+                    f_i.mate_genome = nearest_j.genome
+                    self.colony_events.append(
+                        {
+                            "time_ms": round(self.time_ms, 2),
+                            "event": "COPULATION_SEX_PEPTIDE_TRANSFERRED",
+                            "female_id": f_i.genome.fly_id,
+                            "male_id": nearest_j.genome.fly_id,
+                            "pc1_receptivity": f_i.receptivity_score,
+                        }
+                    )
 
-                # Advance 3D spatial locomotion from decoded motor & social pursuit
-                if nearest_j is not None and f_i.wing_song_active:
-                    # Male chases & circles female during courtship song
-                    dx, dy = nearest_j.pos_xyz[0] - xi, nearest_j.pos_xyz[1] - yi
-                    target_yaw = math.atan2(dy, dx)
-                    f_i.arena.thorax_rpy[2] = target_yaw
-                    if nearest_dist > 0.0022:
-                        f_i.arena.pos_xyz[0] += 0.0005 * math.cos(target_yaw)
-                        f_i.arena.pos_xyz[1] += 0.0005 * math.sin(target_yaw)
-                    else:
-                        # Lateral courtship circling around female
-                        f_i.arena.pos_xyz[0] += 0.0004 * (-math.sin(target_yaw))
-                        f_i.arena.pos_xyz[1] += 0.0004 * math.cos(target_yaw)
-                else:
-                    yaw_now = float(f_i.arena.thorax_rpy[2].item()) + 0.22 * (1.0 if i % 2 == 0 else -1.0)
-                    f_i.arena.thorax_rpy[2] = yaw_now
-                    step_d = 0.00045 * f_i.genome.foraging_locomotion_gain
-                    f_i.arena.pos_xyz[0] = max(-0.0065, min(0.0065, xi + step_d * math.cos(yaw_now)))
-                    f_i.arena.pos_xyz[1] = max(-0.0065, min(0.0065, yi + step_d * math.sin(yaw_now)))
+                # Physical egg extrusion occurs purely when the fly's own 6 uterus motor neurons (CMU / EFFabg95f) contract!
+                if (
+                    enable_ontogeny_and_reproduction
+                    and f_i.oviposition_active
+                    and f_i.mate_genome is not None
+                    and f_i.eggs_laid == 0
+                    and (len(self.flies) + len(new_offspring) < self.max_colony_size)
+                    and self.spawner is not None
+                ):
+                    pat_genome = f_i.mate_genome
+                    child_genome = self.spawner.recombine_genomes(f_i.genome, pat_genome)
+                    egg_pos = (
+                        round(xi + self.spawner.rng.uniform(-0.0015, 0.0015), 5),
+                        round(yi + self.spawner.rng.uniform(-0.0015, 0.0015), 5),
+                        0.0,
+                    )
+                    egg_fly = self.spawner.spawn_fly(
+                        pos_xyz=egg_pos,
+                        life_stage="egg",
+                        genome_override=child_genome,
+                    )
+                    new_offspring.append(egg_fly)
+                    f_i.eggs_laid += 1
+                    self.colony_events.append(
+                        {
+                            "time_ms": round(self.time_ms, 2),
+                            "event": "OVIPOSITION_EGG_LAID",
+                            "mother_id": f_i.genome.fly_id,
+                            "father_id": pat_genome.fly_id,
+                            "egg_id": child_genome.fly_id,
+                            "sex": child_genome.sex,
+                            "generation": child_genome.generation,
+                        }
+                    )
 
                 snapshots.append(self._build_snapshot(f_i, n_active=conn_out.n_active_cells, conn_out=conn_out))
 

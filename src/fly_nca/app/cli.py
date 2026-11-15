@@ -85,9 +85,19 @@ def cmd_spawn(args: argparse.Namespace) -> int:
 
 def cmd_colony3d(args: argparse.Namespace) -> int:
     from fly_nca.app.viewer3d import export_colony_3d_viewer_html
+    from fly_nca.body.mujoco_flygym import serve_live_mujoco_colony
 
     if args.device == "cuda" and not torch.cuda.is_available():
         args.device = "cpu"
+    if getattr(args, "live", False):
+        serve_live_mujoco_colony(
+            output_html_path=args.out,
+            n_founders=args.founders,
+            seed=args.seed,
+            port=args.port,
+            device=args.device,
+        )
+        return 0
     res = export_colony_3d_viewer_html(
         output_path=args.out,
         n_founders=args.founders,
@@ -135,6 +145,8 @@ def build_parser() -> argparse.ArgumentParser:
     col_p.add_argument("--frames", type=int, default=16)
     col_p.add_argument("--seed", type=int, default=108)
     col_p.add_argument("--out", type=str, default="colony_3d_viewer.html")
+    col_p.add_argument("--live", action="store_true", help="Run unbounded t=0 -> infinity real-time SSE simulation stream")
+    col_p.add_argument("--port", type=int, default=8765)
     col_p.add_argument("--device", default=_device_default())
     col_p.set_defaults(func=cmd_colony3d)
 
