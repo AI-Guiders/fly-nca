@@ -15,6 +15,13 @@ from fly_nca.genome.fly_genome import (
     build_canonical_hemilineage_catalog,
     verify_against_banc_meta,
 )
+from fly_nca.genome.gene_network import (
+    Gene,
+    GeneGraph,
+    GeneOntogenyResult,
+    build_canonical_gene_graph,
+    run_gene_ontogeny_automaton,
+)
 from fly_nca.genome.morphogenesis import (
     ORGAN_NAMES,
     DevelopedFlyOrganism,
@@ -45,4 +52,9 @@ __all__ = [
     "IndividualFlyGenome",
     "MultiFlySocialArena3D",
     "SpawnedFly",
+    "Gene",
+    "GeneGraph",
+    "GeneOntogenyResult",
+    "build_canonical_gene_graph",
+    "run_gene_ontogeny_automaton",
 ]

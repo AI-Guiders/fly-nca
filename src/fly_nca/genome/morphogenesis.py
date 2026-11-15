@@ -110,10 +110,8 @@ def develop_fly_from_genome(
 
     # Step 1: Run Syncytial Blastoderm -> Gap + Pair-Rule -> Hox segmentation NCA
     _ = genome.run_french_flag_segmentation_nca(n_positions=64, steps=16, recorder=recorder)
-    active_segments = genome.segments
-    active_organs = genome.organs
-    seg_map = {name: idx for idx, name in enumerate(active_segments)}
-    org_map = {name: idx for idx, name in enumerate(active_organs)}
+    seg_map = {name: idx for idx, name in enumerate(SEGMENTS_8)}
+    org_map = {name: idx for idx, name in enumerate(ORGAN_NAMES)}
 
     seg_list: list[int] = []
     lin_list: list[int] = []
@@ -127,23 +125,18 @@ def develop_fly_from_genome(
 
     n_wave1 = 0
     n_wave2 = 0
-    n_shtf = len(genome.shtf_names)
-    w1_windows = max(1, min(6, n_shtf // 3))
-    w2_windows = max(1, n_shtf - w1_windows)
 
     for lin_idx, hl in enumerate(genome.hemilineages):
-        eff_seg_name = genome.hox_segment_overrides.get(hl.segment, hl.segment)
-        s_id = seg_map.get(eff_seg_name, 0)
-        o_id = org_map.get(hl.organ_target, 0)
+        s_id = seg_map[hl.segment]
+        o_id = org_map[hl.organ_target]
         sign_val = NT_SIGN_MAP[hl.fast_nt]
-        organ_amp = float(genome.notch_type2_amplification.get(hl.organ_target, 1.0))
 
-        # Wave 1 (Imp+ early windows 0..w1_windows-1)
+        # Wave 1 (Imp+ early windows 0..5)
         c1 = max(1, int(round(hl.wave1_count * scale))) if hl.wave1_count > 0 else 0
         for k in range(c1):
             seg_list.append(s_id)
             lin_list.append(lin_idx)
-            tf_list.append(k % w1_windows)  # Early Imp/chinmo/mamo windows
+            tf_list.append(k % 6)  # Early Imp/chinmo/mamo windows
             notch_list.append(hl.notch_on)
             wave_list.append(1)
             org_list.append(o_id)
@@ -152,13 +145,13 @@ def develop_fly_from_genome(
             nt_signs.append(sign_val)
         n_wave1 += c1
 
-        # Wave 2 (20E pulse + dati/Syp windows + evolutionary Notch/bRG heterochronic amplification)
+        # Wave 2 (20E pulse + dati/Syp windows 6..16)
         if stage == "adult" and hl.wave2_count > 0:
-            c2 = max(1, int(round(hl.wave2_count * scale * organ_amp)))
+            c2 = max(1, int(round(hl.wave2_count * scale)))
             for k in range(c2):
                 seg_list.append(s_id)
                 lin_list.append(lin_idx)
-                tf_list.append(w1_windows + (k % w2_windows))  # Mid-late jim/br/dati/Syp windows
+                tf_list.append(6 + (k % 11))  # Mid-late jim/br/dati/Syp windows
                 notch_list.append(hl.notch_on)
                 wave_list.append(2)
                 org_list.append(o_id)
@@ -211,18 +204,8 @@ def develop_fly_from_genome(
         k_org = 1.5 * k_org - 0.5 * (k_org @ k_org.t()) @ k_org
         q_org = 1.5 * q_org - 0.5 * (q_org @ q_org.t()) @ q_org
 
-    # 3c. Iterative local Hebbian DIP<->Dpr growth-cone synaptogenesis during Wave 2 (zero pinv!)
-    base_matrix = genome.organ_input_matrix if genome.organ_input_matrix is not None else BANC_ORGAN_INPUT_MATRIX
-    target_tract = torch.tensor(base_matrix, device=dev, dtype=torch.float32)
-    if genome.notch_type2_amplification:
-        # Scale efferent projection capacity proportionally to evolutionary Notch/bRG proliferation of each source organ!
-        amp_vec = torch.tensor(
-            [float(genome.notch_type2_amplification.get(oname, 1.0)) for oname in active_organs],
-            device=dev,
-            dtype=torch.float32,
-        ).unsqueeze(1)
-        target_tract = target_tract * amp_vec
-        target_tract = target_tract / target_tract.sum(dim=0, keepdim=True).clamp(min=1e-6)
+    # 3c. Iterative local Hebbian DIP<->Dpr growth-cone synaptogenesis during pupal Wave 2 (zero pinv!)
+    target_tract = torch.tensor(BANC_ORGAN_INPUT_MATRIX, device=dev, dtype=torch.float32)
     m_cam = torch.zeros((genome.cam_dim, genome.cam_dim), device=dev, dtype=torch.float32)
     for _ in range(25):
         trophic_deficit = target_tract - (k_org @ m_cam @ q_org.t())

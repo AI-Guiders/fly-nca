@@ -206,30 +206,37 @@ def test_multigenerational_colony_ontogeny_egg_larva_pupa_adult_and_3d_viewer(tm
     assert "ADULT_ECLOSION_189766_CELLS" in event_types
 
 
-def test_evo_devo_parameterized_genomes_across_phylogeny() -> None:
-    """6. Verify that the same morphogenesis automaton grows distinct organisms from parameterized genomes."""
-    from fly_nca.genome.fly_genome import FlyGenome
-    from fly_nca.genome.morphogenesis import develop_fly_from_genome
+def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
+    """6. Verify that the pure GeneGraph automaton (zero organ_id / segment_id) grows distinct organisms from gene mutations."""
+    from fly_nca.genome.gene_network import build_canonical_gene_graph, run_gene_ontogeny_automaton
 
-    worm = develop_fly_from_genome(FlyGenome.urbilateria_worm(), stage="adult", scale=0.1)
-    fly_wt = develop_fly_from_genome(FlyGenome.drosophila_wt(), stage="adult", scale=0.1)
-    fly_ubx = develop_fly_from_genome(FlyGenome.ultrabithorax_bithorax_mutant(), stage="adult", scale=0.1)
-    chordate = develop_fly_from_genome(FlyGenome.vertebrate_pallium_expansion(), stage="adult", scale=0.1)
+    wt_graph = build_canonical_gene_graph()
+    ecr_minus_graph = wt_graph.with_knockout("EcR_20E")
+    ubx_minus_graph = wt_graph.with_knockout("Ubx")
+    notch2nl_graph = wt_graph.with_duplication(
+        "Notch",
+        "NOTCH2NL",
+        replace_activators=(("otd_Otx", 2.2),),
+        feed_into_targets=(("Cyclin", "activate", 1.4), ("pros_stop", "repress", 1.8), ("Imp", "activate", 0.85)),
+    )
 
-    # 1. Ancestral Wave 1 core is conserved across all four genomes!
-    assert worm.n_wave1_primary == fly_wt.n_wave1_primary == fly_ubx.n_wave1_primary == chordate.n_wave1_primary
-    assert worm.n_wave2_secondary == 0
-    assert fly_wt.n_wave2_secondary > worm.n_wave1_primary
+    res_wt = run_gene_ontogeny_automaton(wt_graph)
+    res_ecr = run_gene_ontogeny_automaton(ecr_minus_graph)
+    res_ubx = run_gene_ontogeny_automaton(ubx_minus_graph)
+    res_n2nl = run_gene_ontogeny_automaton(notch2nl_graph)
 
-    # 2. Homeotic Ultrabithorax (T3 -> T2) expands thoracic VNC while keeping MB/CX unchanged
-    c_wt = fly_wt.organ_cell_counts()
-    c_ubx = fly_ubx.organ_cell_counts()
-    assert c_ubx["VNC"] > c_wt["VNC"]
-    assert c_ubx["MB"] == c_wt["MB"]
+    # 1. EcR_20E^- knockout halts division after primary wave (fewer cells than wild-type)
+    assert res_ecr.n_cells < res_wt.n_cells
+    assert res_ecr.divisions_per_step[-1] == 0
 
-    # 3. Pallium/Basal-Ganglia Notch heterochrony expands MB & CX while conserving the VNC brainstem/spinal core
-    c_ch = chordate.organ_cell_counts()
-    assert c_ch["VNC"] == c_wt["VNC"]
-    assert c_ch["MB"] > 3 * c_wt["MB"]
-    assert c_ch["CX"] > c_wt["CX"]
-    assert chordate.tract_weight("MB", "LH_SPIN") > fly_wt.tract_weight("MB", "LH_SPIN")
+    # 2. Ubx^- knockout eliminates Ubx+ & Dpr8+ cells and derepresses Antp+ & Dpr7+ wing CAM expression!
+    assert res_wt.count_expressing("Ubx") > 0
+    assert res_ubx.count_expressing("Ubx") == 0
+    assert res_ubx.count_expressing("Dpr8") == 0
+    assert res_ubx.count_expressing("Antp") > res_wt.count_expressing("Antp")
+    assert res_ubx.count_expressing("Dpr7") > res_wt.count_expressing("Dpr7")
+
+    # 3. NOTCH2NL duplication under otd_Otx enhancer delays pros_stop and expands otd_Otx+ / Dpr3+ cells
+    assert res_n2nl.count_expressing("otd_Otx") > 5 * res_wt.count_expressing("otd_Otx")
+    assert res_n2nl.count_expressing("Dpr3") > 5 * res_wt.count_expressing("Dpr3")
+    assert int((res_n2nl.synaptic_weights.abs() > 0.05).sum().item()) > int((res_wt.synaptic_weights.abs() > 0.05).sum().item())
