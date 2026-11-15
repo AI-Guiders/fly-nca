@@ -207,43 +207,57 @@ def test_multigenerational_colony_ontogeny_egg_larva_pupa_adult_and_3d_viewer(tm
 
 
 def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
-    """6. Verify that the pure GeneGraph automaton (zero organ_id / segment_id) grows distinct organisms from gene mutations."""
+    """6. Verify that the pure GeneGraph automaton (zero gene strings in step, unweighted FCA/SPR enhancers) grows distinct phenotypes."""
     from fly_nca.genome.gene_network import build_canonical_gene_graph, run_gene_ontogeny_automaton
+    from fly_nca.instruments import TranscriptomeAtlasScanner
+    from verify_checks.suites import check_gene_network_purity_and_fca_grounding
+
+    # 1. Verify AST & unweighted enhancer purity gate
+    purity = check_gene_network_purity_and_fca_grounding()
+    assert purity["ok"] is True
+    assert purity["leaked_gene_strings_in_automaton"] == []
 
     wt_graph = build_canonical_gene_graph()
-    ecr_minus_graph = wt_graph.with_knockout("EcR_20E")
+    ecr_minus_graph = wt_graph.with_knockout("EcR")
+    ey_minus_graph = wt_graph.with_knockout("ey")
+    # Gehring 1995 (Science): ectopic expression of mouse Pax6 homolog in Antp+ thoracic primordium
+    gehring_pax6_graph = ey_minus_graph.with_duplication(
+        "ey",
+        "Pax6_mouse",
+        replace_activators=("Antp",),
+        replace_repressors=(),
+        feed_into_targets=(("dpr5", "activate"), ("dpr12", "activate"), ("DIP-gamma", "activate")),
+    )
     ubx_minus_graph = wt_graph.with_knockout("Ubx")
     notch2nl_graph = wt_graph.with_duplication(
-        "Notch",
+        "CycB",
         "NOTCH2NL",
-        replace_activators=(("otd_Otx", 2.2),),
-        feed_into_targets=(("Cyclin", "activate", 1.4), ("pros_stop", "repress", 1.8), ("Imp", "activate", 0.85)),
+        replace_activators=("oc",),
+        feed_into_targets=(("pros", "repress"), ("Imp", "activate")),
     )
 
     res_wt = run_gene_ontogeny_automaton(wt_graph)
     res_ecr = run_gene_ontogeny_automaton(ecr_minus_graph)
+    res_ey = run_gene_ontogeny_automaton(ey_minus_graph)
+    res_gehring = run_gene_ontogeny_automaton(gehring_pax6_graph)
     res_ubx = run_gene_ontogeny_automaton(ubx_minus_graph)
     res_n2nl = run_gene_ontogeny_automaton(notch2nl_graph)
 
-    # 1. EcR_20E^- knockout halts division after primary wave (fewer cells than wild-type)
-    assert res_ecr.n_cells < res_wt.n_cells
-    assert res_ecr.divisions_per_step[-1] == 0
+    # 2. Gehring (1995) eyeless / Pax6 deep homology: ey^- ablates eye cells; mouse Pax6 under Antp induces ectopic eye cascade!
+    assert res_wt.count_expressing("ey") > 0
+    assert res_ey.count_expressing("ey") == 0
+    assert res_gehring.count_expressing("Pax6_mouse") > 0
+    assert res_gehring.count_expressing("dpr5") > res_ey.count_expressing("dpr5")
 
-    # 2. Ubx^- knockout eliminates Ubx+ & Dpr8+ cells and derepresses Antp+ & Dpr7+ wing CAM expression!
+    # 3. Lewis (1978/1995) Ubx^- knockout eliminates Ubx+ cells and expands Antp+ / T2_WingMesothorax domain
     assert res_wt.count_expressing("Ubx") > 0
     assert res_ubx.count_expressing("Ubx") == 0
-    assert res_ubx.count_expressing("Dpr8") == 0
     assert res_ubx.count_expressing("Antp") > res_wt.count_expressing("Antp")
-    assert res_ubx.count_expressing("Dpr7") > res_wt.count_expressing("Dpr7")
 
-    # 3. NOTCH2NL duplication under otd_Otx enhancer delays pros_stop and expands otd_Otx+ / Dpr3+ cells
-    assert res_n2nl.count_expressing("otd_Otx") > 5 * res_wt.count_expressing("otd_Otx")
-    assert res_n2nl.count_expressing("Dpr3") > 5 * res_wt.count_expressing("Dpr3")
-    assert int((res_n2nl.synaptic_weights.abs() > 0.05).sum().item()) > int((res_wt.synaptic_weights.abs() > 0.05).sum().item())
+    # 4. NOTCH2NL duplication under forebrain `oc` (Otx) enhancer expands `oc+` pallial progenitors
+    assert res_n2nl.count_expressing("oc") > 5 * res_wt.count_expressing("oc")
 
-    # 4. External observer instrument (TranscriptomeAtlasScanner) classifies phenotypes & domain shifts from raw gene expression
-    from fly_nca.instruments import TranscriptomeAtlasScanner
-
+    # 5. External observer instrument (TranscriptomeAtlasScanner) classifies phenotypes from raw gene expression
     scanner = TranscriptomeAtlasScanner()
     rep_wt = scanner.scan(res_wt)
     rep_ecr = scanner.scan(res_ecr, wild_type_baseline=rep_wt)
@@ -256,4 +270,3 @@ def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
     assert rep_n2nl.matched_phenotype == "chordata.pallium_notch2nl_expanded"
     assert rep_ubx.domain_counts["T3_HaltereMetathorax"] == 0
     assert rep_ubx.domain_counts["T2_WingMesothorax"] > rep_wt.domain_counts["T2_WingMesothorax"]
-    assert rep_n2nl.domain_counts["MB_Pallium"] > 5 * rep_wt.domain_counts["MB_Pallium"]

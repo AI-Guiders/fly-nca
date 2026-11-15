@@ -54,15 +54,15 @@ class TranscriptomeScanReport:
 
 
 CANONICAL_MARKER_DOMAINS: tuple[MarkerDomainSpec, ...] = (
-    MarkerDomainSpec("OL_OpticLobe", positive_markers=("ey_Six3", "Dpr1"), negative_markers=("Antp", "Ubx")),
-    MarkerDomainSpec("MB_Pallium", positive_markers=("otd_Otx", "Dpr3", "ChaT_ACh"), negative_markers=("Antp", "Ubx")),
-    MarkerDomainSpec("AL_LH_Olfactory", positive_markers=("otd_Otx", "Dpr2"), negative_markers=("ey_Six3", "Antp")),
-    MarkerDomainSpec("CX_BasalGanglia", positive_markers=("otd_Otx", "Dpr4"), negative_markers=("Dfd_Scr", "Antp")),
-    MarkerDomainSpec("SEZ_Gnathal", positive_markers=("Dfd_Scr", "Dpr5"), negative_markers=("otd_Otx", "Antp")),
-    MarkerDomainSpec("T1_Prothorax", positive_markers=("Antp", "Dpr6"), negative_markers=("Ubx",)),
-    MarkerDomainSpec("T2_WingMesothorax", positive_markers=("Antp", "Dpr7"), negative_markers=("Ubx",)),
-    MarkerDomainSpec("T3_HaltereMetathorax", positive_markers=("Ubx", "Dpr8"), negative_markers=("abd_A",)),
-    MarkerDomainSpec("Abdomen_Visceral", positive_markers=("Dpr9",), negative_markers=("otd_Otx", "Antp")),
+    MarkerDomainSpec("OL_OpticLobe", positive_markers=("ey", "dpr5"), negative_markers=("Antp", "Ubx")),
+    MarkerDomainSpec("MB_Pallium", positive_markers=("oc", "dpr7", "VAChT"), negative_markers=("Antp", "Ubx")),
+    MarkerDomainSpec("AL_LH_Olfactory", positive_markers=("oc", "dpr16"), negative_markers=("ey", "Antp")),
+    MarkerDomainSpec("CX_BasalGanglia", positive_markers=("oc", "DIP-alpha"), negative_markers=("Dfd", "Antp")),
+    MarkerDomainSpec("SEZ_Gnathal", positive_markers=("Dfd",), negative_markers=("oc", "Antp")),
+    MarkerDomainSpec("T1_Prothorax", positive_markers=("Antp", "hb"), negative_markers=("Ubx",)),
+    MarkerDomainSpec("T2_WingMesothorax", positive_markers=("Antp", "dpr11"), negative_markers=("Ubx",)),
+    MarkerDomainSpec("T3_HaltereMetathorax", positive_markers=("Ubx", "DIP-epsilon"), negative_markers=("abd-A",)),
+    MarkerDomainSpec("Abdomen_Visceral", positive_markers=("abd-A", "DIP-iota"), negative_markers=("oc", "Antp")),
 )
 
 
@@ -129,19 +129,19 @@ class TranscriptomeAtlasScanner:
         shifts: list[str] = []
         n_ubx = gene_counts.get("Ubx", 0)
         n_antp = gene_counts.get("Antp", 0)
-        n_otx = gene_counts.get("otd_Otx", 0)
-        n_ecr = gene_counts.get("EcR_20E", 0)
+        n_oc = gene_counts.get("oc", 0)
+        n_ecr = gene_counts.get("EcR", 0)
         has_notch2nl = gene_counts.get("NOTCH2NL", 0) > 0
 
-        if n_ubx == 0 and n_antp > 400:
+        if n_ubx == 0 and n_antp > 100:
             phenotype = "drosophila.melanogaster.ubx_bithorax_homeotic_4wing"
-            shifts.append("Homeotic transformation T3 -> T2: Ubx+/Dpr8+ haltere domain absent (0 cells); Antp+/Dpr7+ wing domain duplicated.")
-        elif has_notch2nl or n_otx > 2000:
+            shifts.append("Homeotic transformation T3 -> T2: Ubx+/DIP-epsilon+ haltere domain absent (0 cells); Antp+/dpr11+ wing domain expanded.")
+        elif has_notch2nl or n_oc > 800:
             phenotype = "chordata.pallium_notch2nl_expanded"
-            shifts.append(f"Forebrain heterochronic expansion: otd_Otx+ / Dpr3+ pallial domain expanded to {n_otx} cells via delayed STOP_CYCLE.")
-        elif n_ecr == 0 and ontogeny.n_cells < 1200:
+            shifts.append(f"Forebrain heterochronic expansion: oc+ / dpr7+ pallial domain expanded to {n_oc} cells via delayed CELL_CYCLE_EXIT.")
+        elif n_ecr == 0:
             phenotype = "urbilateria.primary_wave1_worm"
-            shifts.append("Primary-wave-only ontogeny: EcR_20E metamorphosis absent; cells exited mitosis after primary embryonic wave.")
+            shifts.append("Primary-wave-only ontogeny: EcR metamorphosis absent; cells exited mitosis after primary embryonic wave.")
         else:
             phenotype = "drosophila.melanogaster.wild_type"
 

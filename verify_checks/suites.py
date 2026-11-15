@@ -154,6 +154,56 @@ def check_pan_connectome_189766_and_spawner(device: str = "cpu") -> dict[str, An
     }
 
 
+def check_gene_network_purity_and_fca_grounding(device: str = "cpu") -> dict[str, Any]:
+    """AST & empirical gate: zero gene-name strings in ontogeny loop, zero float enhancer weights, and Gehring Pax6 / Lewis Ubx validation."""
+    import ast
+    from fly_nca.genome.gene_network import build_canonical_gene_graph, run_gene_ontogeny_automaton
+
+    grn_path = REPO_ROOT / "src" / "fly_nca" / "genome" / "gene_network.py"
+    tree = ast.parse(grn_path.read_text(encoding="utf-8"))
+    wt_graph = build_canonical_gene_graph()
+    all_gene_names = {g.name for g in wt_graph.genes}
+
+    leaked_gene_strings: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "run_gene_ontogeny_automaton":
+            for sub_node in ast.walk(node):
+                if isinstance(sub_node, ast.Constant) and isinstance(sub_node.value, str):
+                    if sub_node.value in all_gene_names:
+                        leaked_gene_strings.append(sub_node.value)
+
+    unweighted_enhancers = all(
+        all(isinstance(a, str) for a in g.activators)
+        and all(isinstance(r, str) for r in g.repressors)
+        and bool(g.source_ref.strip())
+        for g in wt_graph.genes
+    )
+
+    res_wt = run_gene_ontogeny_automaton(wt_graph, device=device)
+    res_ey_ko = run_gene_ontogeny_automaton(wt_graph.with_knockout("ey"), device=device)
+    res_ubx_ko = run_gene_ontogeny_automaton(wt_graph.with_knockout("Ubx"), device=device)
+
+    ok = (
+        len(leaked_gene_strings) == 0
+        and unweighted_enhancers
+        and res_wt.count_expressing("ey") > 0
+        and res_ey_ko.count_expressing("ey") == 0
+        and res_wt.count_expressing("Ubx") > 0
+        and res_ubx_ko.count_expressing("Ubx") == 0
+    )
+    return {
+        "id": "P4_gene_network_purity_and_fca_grounding",
+        "ok": ok,
+        "leaked_gene_strings_in_automaton": leaked_gene_strings,
+        "unweighted_enhancers_with_source_ref": unweighted_enhancers,
+        "n_genes": len(wt_graph.genes),
+        "wt_ey_cells": res_wt.count_expressing("ey"),
+        "ey_ko_cells": res_ey_ko.count_expressing("ey"),
+        "wt_ubx_cells": res_wt.count_expressing("Ubx"),
+        "ubx_ko_cells": res_ubx_ko.count_expressing("Ubx"),
+    }
+
+
 def check_shiu2024_nature_sez_optogenetics_blind_holdout(device: str = "cpu") -> dict[str, Any]:
     """Blind out-of-sample validation on Shiu et al. (2024) Nature SEZ Split-GAL4 optogenetic PER screen (94 lines)."""
     from pathlib import Path
@@ -242,6 +292,7 @@ VERIFY_SUITES: dict[str, VerifySuiteSpec] = {
             check_zero_pinv_and_atan2_purity,
             check_banc_biophysics_and_time_quanta,
             check_pan_connectome_189766_and_spawner,
+            check_gene_network_purity_and_fca_grounding,
         ),
         ship=True,
     ),
