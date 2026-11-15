@@ -1,7 +1,7 @@
 # Архитектура NCA-Муха: $f(\text{Природа}) = \text{NCA-Мух}$
 
 **Статус:** проектная спецификация (v1) · **Дата:** 2026-11-14  
-**Репозиторий:** `D:\Experiments\Personal Cursor Folder\open\fly-nca`  
+**Репозиторий:** `https://github.com/AI-Guiders/fly-nca`  
 **Парный документ (детальная алгоритмика и формулы):** [`design/algorithmic-spec.md`](algorithmic-spec.md)  
 **Источники данных:** KB `worlds/biology-drosophila/` · `BANC v888` (♀ ЦНС: `188 508` нейронов, `12 750` глии, `11.75M` рёбер) · `MCNS v1.0` (♂ ЦНС: `166 691` нейрон) · `FAFB v783` (♀ мозг: `8 453` типа).
 

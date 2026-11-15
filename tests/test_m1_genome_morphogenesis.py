@@ -42,7 +42,7 @@ from fly_nca.genome.banc_biophysics import (
     BANC_ORGAN_INPUT_MATRIX,
 )
 
-BANC_META_PATH = Path(r"D:\Experiments\casa-data\connectomes\banc-v888\banc_888_meta.feather")
+BANC_META_PATH = Path(__file__).resolve().parents[1] / "data" / "banc_888_meta.feather"
 
 
 def test_physical_time_quanta_constants() -> None:

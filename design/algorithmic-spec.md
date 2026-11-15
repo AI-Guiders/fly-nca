@@ -1,7 +1,7 @@
 # Алгоритмическая и математическая спецификация `Fly-NCA` (v1)
 
 **Статус:** рабочая инженерная спецификация · **Дата:** 2026-11-14  
-**Репозиторий:** `D:\Experiments\Personal Cursor Folder\open\fly-nca`  
+**Репозиторий:** `https://github.com/AI-Guiders/fly-nca`  
 **Обзорная архитектура:** [`design/architecture.md`](architecture.md)
 
 ---

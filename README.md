@@ -43,8 +43,19 @@ pytest -q
 
 ---
 
-## Связь с базой знаний (KB)
+## Данные коннектомов и сборка с нуля (`data/` и `tools/`)
 
-- Мир биологии дрозофилы: `D:/Experiments/agent-notes/knowledge/worlds/biology-drosophila/`
-- Карточка-указатель в рабочем контуре KB: `D:/Experiments/agent-notes/knowledge/work/projects/door-to-singularity/ca-substrate-agent/drosophil-synthesis/fly-agent-architecture-design.md`
-- Локальные данные коннектомов: `D:/Experiments/casa-data/connectomes/` (`banc-v888`, `mcns-v1.0`, `fafb-v783`)
+В папке `data/` (через Git LFS) уже лежат скомпилированный 5-портовый коннектом (`data/drosophila_pan_connectome_189766.pt`, `189,766` клеток и `6,853,423` синаптических ребра) и проверочные таблицы метаданных (`banc_888_meta.feather`, `banc_888_meta_20260521.parquet`, `shiu_et_al_2025_fafb_mapped_opto_and_model_results.csv`), поэтому все тесты и `python verify_principles.py --ship` работают сразу после клонирования репозитория.
+
+Если нужно скачать исходные первичные таблицы из открытых репозиториев (`BANC v888`, `MaleCNS v1.0 / v0.9`, `FAFB v783`, `Fly Cell Atlas`) и пересобрать `drosophila_pan_connectome_189766.pt` с нуля:
+
+```bash
+# Проверить статус локальных файлов:
+python tools/download_connectomes.py --check
+
+# Скачать базовый комплект для сборки 189,766-клеточного коннектома (или --tier full для полного архива 68 ГБ):
+python tools/download_connectomes.py --tier build --data-dir ./data/casa-data
+
+# Пересобрать data/drosophila_pan_connectome_189766.pt из сырых таблиц:
+python tools/build_pan_connectome_189766.py
+```

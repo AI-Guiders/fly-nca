@@ -27,9 +27,8 @@ import torch.nn as nn
 from fly_nca.body.adapter import MotorOut, SensorIn
 from fly_nca.core.cell_state import TAU_FAST_MS, TAU_FRAME_MS, TAU_FRAME_TO_FAST_RATIO
 
-PAN_CONNECTOME_PATH = Path(
-    r"D:\Experiments\casa-data\connectomes\banc-v888-csr-cache\drosophila_pan_connectome_189766.pt"
-)
+REPO_DATA_DIR = Path(__file__).resolve().parents[3] / "data"
+PAN_CONNECTOME_PATH = REPO_DATA_DIR / "drosophila_pan_connectome_189766.pt"
 
 
 @dataclass(frozen=True, slots=True)

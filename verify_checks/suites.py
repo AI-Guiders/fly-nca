@@ -162,12 +162,9 @@ def check_shiu2024_nature_sez_optogenetics_blind_holdout(device: str = "cpu") ->
     import torch
     from fly_nca.connectome import FullConnectomeFlyNCA
 
-    shiu_csv = Path(
-        r"D:\Experiments\casa-data\connectomes\repos\BANC-project\data\shiu_et_al_2024\shiu_et_al_2025_fafb_mapped_opto_and_model_results.csv"
-    )
-    meta_pq = Path(
-        r"D:\Experiments\casa-data\connectomes\repos\BANC-project\data\meta\banc_888_meta_20260521.parquet"
-    )
+    repo_data = Path(__file__).resolve().parents[1] / "data"
+    shiu_csv = repo_data / "shiu_et_al_2025_fafb_mapped_opto_and_model_results.csv"
+    meta_pq = repo_data / "banc_888_meta_20260521.parquet"
     if not shiu_csv.is_file() or not meta_pq.is_file():
         return {"id": "H1_shiu2024_nature_sez_optogenetics_zeroshot", "ok": True, "skipped": True}
 

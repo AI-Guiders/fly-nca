@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile the Full 189,766-Cell Drosophila Pan-Connectome v2 (BANC v888 + MaleCNS + Frankenbrain + FCA + Influence).
 
-Integrates all local empirical layers from `D:/Experiments/casa-data/`:
+Integrates all empirical layers from `$FLY_NCA_DATA_DIR` (or `./data/casa-data/` downloaded via `tools/download_connectomes.py`):
 1. `repos/BANC-project/data/meta/banc_888_meta_20260521.parquet` (188,508 cells x 165 cols: known_nt, v3 NT, malecns_nblast, etc.)
 2. `banc-v888/banc_888_metrics.feather` (morphometry: l2_cable_length_um, branchpoints, segregation_index)
 3. `repos/BANC-project/data/meta/franken_meta_20260522.feather` (163,833 cells x 62 cols: EM soma_dcv_density, cell_dcv_density_um, tracts, serial_motif)
@@ -12,12 +12,13 @@ Integrates all local empirical layers from `D:/Experiments/casa-data/`:
 8. `banc-v888/banc_888_edgelist_split_v3.feather` (15,716,248 subcellular split edges)
 9. `mcns-v1.0/` + `malecns-v0.9/malecns_09_meta.feather` (+ `malecns_09_split_edgelist.feather` when available)
 
-Outputs `D:/Experiments/casa-data/connectomes/banc-v888-csr-cache/drosophila_pan_connectome_189766.pt` (schema_version=2).
+Outputs `data/drosophila_pan_connectome_189766.pt`.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
+import os
 from pathlib import Path
 import time
 import zipfile
@@ -28,13 +29,15 @@ import pyarrow.feather as pf
 import pyarrow.parquet as pq
 import torch
 
-BANC_DIR = Path(r"D:\Experiments\casa-data\connectomes\banc-v888")
-BANC_EXTRAS_DIR = Path(r"D:\Experiments\casa-data\connectomes\banc-v888-extras")
-BANC_REPO_META_DIR = Path(r"D:\Experiments\casa-data\connectomes\repos\BANC-project\data\meta")
-MCNS_DIR = Path(r"D:\Experiments\casa-data\connectomes\mcns-v1.0")
-MALECNS09_DIR = Path(r"D:\Experiments\casa-data\connectomes\malecns-v0.9")
-FCA_DIR = Path(r"D:\Experiments\casa-data\fca")
-OUT_PATH = Path(r"D:\Experiments\casa-data\connectomes\banc-v888-csr-cache\drosophila_pan_connectome_189766.pt")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = Path(os.environ.get("FLY_NCA_DATA_DIR", str(REPO_ROOT / "data" / "casa-data")))
+BANC_DIR = DATA_ROOT / "connectomes" / "banc-v888"
+BANC_EXTRAS_DIR = DATA_ROOT / "connectomes" / "banc-v888-extras"
+BANC_REPO_META_DIR = DATA_ROOT / "connectomes" / "repos" / "BANC-project" / "data" / "meta"
+MCNS_DIR = DATA_ROOT / "connectomes" / "mcns-v1.0"
+MALECNS09_DIR = DATA_ROOT / "connectomes" / "malecns-v0.9"
+FCA_DIR = DATA_ROOT / "fca"
+OUT_PATH = REPO_ROOT / "data" / "drosophila_pan_connectome_189766.pt"
 
 NT_TO_ID: dict[str, int] = {
     "acetylcholine": 0,
