@@ -240,3 +240,20 @@ def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
     assert res_n2nl.count_expressing("otd_Otx") > 5 * res_wt.count_expressing("otd_Otx")
     assert res_n2nl.count_expressing("Dpr3") > 5 * res_wt.count_expressing("Dpr3")
     assert int((res_n2nl.synaptic_weights.abs() > 0.05).sum().item()) > int((res_wt.synaptic_weights.abs() > 0.05).sum().item())
+
+    # 4. External observer instrument (TranscriptomeAtlasScanner) classifies phenotypes & domain shifts from raw gene expression
+    from fly_nca.instruments import TranscriptomeAtlasScanner
+
+    scanner = TranscriptomeAtlasScanner()
+    rep_wt = scanner.scan(res_wt)
+    rep_ecr = scanner.scan(res_ecr, wild_type_baseline=rep_wt)
+    rep_ubx = scanner.scan(res_ubx, wild_type_baseline=rep_wt)
+    rep_n2nl = scanner.scan(res_n2nl, wild_type_baseline=rep_wt)
+
+    assert rep_wt.matched_phenotype == "drosophila.melanogaster.wild_type"
+    assert rep_ecr.matched_phenotype == "urbilateria.primary_wave1_worm"
+    assert rep_ubx.matched_phenotype == "drosophila.melanogaster.ubx_bithorax_homeotic_4wing"
+    assert rep_n2nl.matched_phenotype == "chordata.pallium_notch2nl_expanded"
+    assert rep_ubx.domain_counts["T3_HaltereMetathorax"] == 0
+    assert rep_ubx.domain_counts["T2_WingMesothorax"] > rep_wt.domain_counts["T2_WingMesothorax"]
+    assert rep_n2nl.domain_counts["MB_Pallium"] > 5 * rep_wt.domain_counts["MB_Pallium"]
