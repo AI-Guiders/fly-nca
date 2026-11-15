@@ -32,6 +32,7 @@ class OpticLobeNCA(nn.Module):
         self.n_columns = int(n_columns)
         self.device = torch.device(device)
         self.dtype = dtype
+        self.retinal_gain: float = 1.0
 
         # State per hex column: [L1_ON, L2_OFF, Delayed_ON, Delayed_OFF, T4_front2back, T4_back2front]
         self.register_buffer("col_state", torch.zeros((self.n_columns, 6), device=self.device, dtype=dtype))
@@ -39,7 +40,8 @@ class OpticLobeNCA(nn.Module):
 
     def step_optic_lobe(self, sensor: SensorIn, dt_ms: float = TAU_FRAME_MS) -> VisualProjectionDigest:
         """Run local hexagonal column filtering (Lamina -> Medulla -> Lobula Plate T4/T5 -> AOTU & VPN)."""
-        lum = sensor.ommatidia_light.to(self.device, dtype=self.dtype)
+        rg = float(self.retinal_gain)
+        lum = sensor.ommatidia_light.to(self.device, dtype=self.dtype) * rg
         # Hexagonal lateral neighborhood average via circular shifts
         lat_mean = (
             torch.roll(lum, 1)
@@ -82,7 +84,7 @@ class OpticLobeNCA(nn.Module):
         # 1. Anterior Visual Pathway (iScience 2020):
         # Topographic MeTu-l/c -> AOTU SU -> TuBu -> Bulb -> 16 EB wedges
         wedge_angles = torch.linspace(-math.pi, math.pi, 17, device=self.device, dtype=self.dtype)[:-1]
-        bu_ring = torch.relu(torch.cos(wedge_angles - sensor.sun_azimuth_rad))
+        bu_ring = torch.relu(torch.cos(wedge_angles - sensor.sun_azimuth_rad)) * rg
         # Non-topographic MeTu-m integrates across medulla/lobula -> BUi contralateral suppression (ol_bio.inh_share = 0.380)
         bui_inh = float(lum.mean().item()) * ol_bio.inh_share
 
@@ -93,8 +95,8 @@ class OpticLobeNCA(nn.Module):
         return VisualProjectionDigest(
             bu_compass_ring_16=bu_ring,
             bui_contralateral_inh=bui_inh,
-            lc4_lplc2_looming=float(sensor.looming_rate),
-            lc11_small_target=float(sensor.small_target_salience),
+            lc4_lplc2_looming=float(sensor.looming_rate) * rg,
+            lc11_small_target=float(sensor.small_target_salience) * rg,
             lc11_target_azimuth_rad=float(sensor.small_target_azimuth_rad),
             lpt_optic_flow_yaw_fwd=(yaw_flow, fwd_flow),
         )

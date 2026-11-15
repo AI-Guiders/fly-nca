@@ -37,6 +37,9 @@ GeneRole = Literal[
 MaternalPole = Literal["anterior", "posterior", "ventral", "dorsal", "uniform"]
 
 
+TFAxis = Literal["none", "ap", "dv", "temporal"]
+
+
 @dataclass(frozen=True, slots=True)
 class Gene:
     """Single genetic locus with unweighted cis-regulatory enhancer sites and empirical provenance."""
@@ -46,6 +49,7 @@ class Gene:
     source_ref: str
     activators: tuple[str, ...] = ()
     repressors: tuple[str, ...] = ()
+    tf_axis: TFAxis = "none"
     maternal_pole: MaternalPole | None = None
     mitotic_dilution: bool = False
     cam_kd_um: tuple[tuple[str, float], ...] = ()  # Measured SPR dissociation constants K_D (uM) from PMC6289660
@@ -109,6 +113,7 @@ class GeneGraph:
             source_ref=source_ref,
             activators=new_acts,
             repressors=new_reps,
+            tf_axis=src.tf_axis,
             maternal_pole=None,
             mitotic_dilution=src.mitotic_dilution,
             cam_kd_um=src.cam_kd_um,
@@ -118,23 +123,35 @@ class GeneGraph:
         updated: list[Gene] = []
         target_map = dict(feed_into_targets)
         for g in self.genes:
+            # Automatically inherit all outgoing DNA-binding targets of `source_gene` unless overridden
+            acts = g.activators
+            reps = g.repressors
+            if source_gene in acts and new_gene_name not in acts:
+                acts = acts + (new_gene_name,)
+            if source_gene in reps and new_gene_name not in reps:
+                reps = reps + (new_gene_name,)
             if g.name in target_map:
                 mode = target_map[g.name]
-                if mode == "activate":
-                    g = replace(g, activators=g.activators + (new_gene_name,))
-                else:
-                    g = replace(g, repressors=g.repressors + (new_gene_name,))
+                if mode == "activate" and new_gene_name not in acts:
+                    acts = acts + (new_gene_name,)
+                elif mode == "repress" and new_gene_name not in reps:
+                    reps = reps + (new_gene_name,)
+            if acts != g.activators or reps != g.repressors:
+                g = replace(g, activators=acts, repressors=reps)
             updated.append(g)
         updated.append(duplicated)
         return GeneGraph(genes=tuple(updated))
 
     def compile_unweighted_matrices(
         self, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compile unweighted boolean enhancer binding matrices W_act[G, G], W_rep[G, G], and functional mask [G]."""
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compile axis-factored unweighted enhancer matrices (W_ap, W_dv, W_temp, W_gen), W_rep, and functional mask."""
         idx = self.gene_index()
         n_g = len(self.genes)
-        w_act = torch.zeros((n_g, n_g), device=device, dtype=torch.float32)
+        w_ap = torch.zeros((n_g, n_g), device=device, dtype=torch.float32)
+        w_dv = torch.zeros((n_g, n_g), device=device, dtype=torch.float32)
+        w_temp = torch.zeros((n_g, n_g), device=device, dtype=torch.float32)
+        w_gen = torch.zeros((n_g, n_g), device=device, dtype=torch.float32)
         w_rep = torch.zeros((n_g, n_g), device=device, dtype=torch.float32)
         func_mask = torch.zeros(n_g, device=device, dtype=torch.float32)
 
@@ -142,12 +159,21 @@ class GeneGraph:
             func_mask[post_i] = 1.0 if g.functional else 0.0
             for act_name in g.activators:
                 if act_name in idx:
-                    w_act[idx[act_name], post_i] += 1.0
+                    pre_i = idx[act_name]
+                    ax = self.genes[pre_i].tf_axis if pre_i != post_i else "none"
+                    if ax == "ap" and g.role in ("CAM_KEY", "CAM_LOCK", "NT_ENZYME", "ION_CHANNEL"):
+                        w_ap[pre_i, post_i] += 1.0
+                    elif ax == "dv" and g.role in ("CAM_KEY", "CAM_LOCK", "NT_ENZYME", "ION_CHANNEL"):
+                        w_dv[pre_i, post_i] += 1.0
+                    elif ax == "temporal" and g.role in ("CAM_KEY", "CAM_LOCK", "NT_ENZYME", "ION_CHANNEL"):
+                        w_temp[pre_i, post_i] += 1.0
+                    else:
+                        w_gen[pre_i, post_i] += 1.0
             for rep_name in g.repressors:
                 if rep_name in idx:
                     w_rep[idx[rep_name], post_i] += 1.0
 
-        return w_act, w_rep, func_mask
+        return w_ap, w_dv, w_temp, w_gen, w_rep, func_mask
 
 
 REF_AP_HOX = "PLoS Genet 2021 DOI:10.1371/journal.pgen.1009812 (PMC8516289 §10-12) & Nobel 1995 (Lewis/Nusslein-Volhard/Wieschaus)"
@@ -172,27 +198,27 @@ def build_canonical_gene_graph() -> GeneGraph:
         Gene("kni", "TF", REF_AP_HOX, activators=("cad",), repressors=("hb", "Kr", "tll")),
         Gene("tll", "TF", REF_AP_HOX, activators=("bcd", "nos"), repressors=("Kr",)),
         # --- 3. Anterior-Posterior Head & Hox Selector Genes with Trithorax Self-Maintenance ---
-        Gene("ey", "TF", REF_AP_HOX, activators=("bcd", "tll", "ey"), repressors=("cad", "Kr", "Dfd", "Antp", "Ubx")),
-        Gene("oc", "TF", REF_AP_HOX, activators=("bcd", "hb", "oc"), repressors=("Dfd", "Kr", "cad", "Antp", "Ubx")),
-        Gene("Dfd", "TF", REF_AP_HOX, activators=("bcd", "hb", "Dfd"), repressors=("ey", "oc", "Antp", "Ubx", "kni")),
-        Gene("Scr", "TF", REF_AP_HOX, activators=("hb", "Kr", "Scr"), repressors=("ey", "oc", "Antp", "Ubx", "kni")),
-        Gene("Antp", "TF", REF_AP_HOX, activators=("hb", "Kr", "Antp"), repressors=("ey", "oc", "Dfd", "Ubx", "abd-A", "Abd-B")),
-        Gene("Ubx", "TF", REF_AP_HOX, activators=("Kr", "kni", "Ubx"), repressors=("hb", "ey", "oc", "abd-A", "Abd-B")),
-        Gene("abd-A", "TF", REF_AP_HOX, activators=("kni", "cad", "abd-A"), repressors=("hb", "Kr", "ey", "oc", "Abd-B")),
-        Gene("Abd-B", "TF", REF_AP_HOX, activators=("cad", "tll", "Abd-B"), repressors=("hb", "Kr", "ey", "oc")),
+        Gene("ey", "TF", REF_AP_HOX, activators=("bcd", "tll", "ey"), repressors=("cad", "Kr", "Dfd", "Antp", "Ubx"), tf_axis="ap"),
+        Gene("oc", "TF", REF_AP_HOX, activators=("bcd", "hb", "oc"), repressors=("Dfd", "Kr", "cad", "Antp", "Ubx"), tf_axis="ap"),
+        Gene("Dfd", "TF", REF_AP_HOX, activators=("bcd", "hb", "Dfd"), repressors=("ey", "oc", "Antp", "Ubx", "kni"), tf_axis="ap"),
+        Gene("Scr", "TF", REF_AP_HOX, activators=("hb", "Kr", "Scr"), repressors=("ey", "oc", "Antp", "Ubx", "kni"), tf_axis="ap"),
+        Gene("Antp", "TF", REF_AP_HOX, activators=("hb", "Kr", "Antp"), repressors=("ey", "oc", "Dfd", "Ubx", "abd-A", "Abd-B"), tf_axis="ap"),
+        Gene("Ubx", "TF", REF_AP_HOX, activators=("Kr", "kni", "Ubx"), repressors=("hb", "ey", "oc", "abd-A", "Abd-B"), tf_axis="ap"),
+        Gene("abd-A", "TF", REF_AP_HOX, activators=("kni", "cad", "abd-A"), repressors=("hb", "Kr", "ey", "oc", "Abd-B"), tf_axis="ap"),
+        Gene("Abd-B", "TF", REF_AP_HOX, activators=("cad", "tll", "Abd-B"), repressors=("hb", "Kr", "ey", "oc"), tf_axis="ap"),
         # --- 4. Dorso-Ventral Neuroectoderm Columnar Selectors (Arendt & Nubler-Jung 1999) ---
-        Gene("vnd", "TF", REF_DV_COL, activators=("spz_dl", "vnd"), repressors=("dpp", "ind", "Dr")),
-        Gene("ind", "TF", REF_DV_COL, activators=("spz_dl", "ind"), repressors=("vnd", "dpp", "Dr")),
-        Gene("Dr", "TF", REF_DV_COL, activators=("dpp", "Dr"), repressors=("vnd", "ind")),
+        Gene("vnd", "TF", REF_DV_COL, activators=("spz_dl", "vnd"), repressors=("dpp", "ind", "Dr"), tf_axis="dv"),
+        Gene("ind", "TF", REF_DV_COL, activators=("spz_dl", "ind"), repressors=("vnd", "dpp", "Dr"), tf_axis="dv"),
+        Gene("Dr", "TF", REF_DV_COL, activators=("dpp", "Dr"), repressors=("vnd", "ind"), tf_axis="dv"),
         # --- 5. Neuroblast Temporal Cascade, Delta-Notch Lateral Inhibition & Ecdysone Wave 2 (PMC13538039) ---
         Gene("Dl", "JUXTACRINE_LIGAND", REF_NB_TIME, activators=("CycB",), repressors=("N", "pros")),
         Gene("N", "JUXTACRINE_RECEPTOR", REF_NB_TIME, activators=("Dl",), repressors=("pros",)),
-        Gene("Imp", "TF", REF_NB_TIME, activators=("Imp", "oc", "ey"), repressors=("Syp", "pros"), maternal_pole="uniform", mitotic_dilution=True),
-        Gene("chinmo", "TF", REF_NB_TIME, activators=("Imp",), repressors=("br", "Syp", "pros")),
+        Gene("Imp", "TF", REF_NB_TIME, activators=("Imp", "oc", "ey"), repressors=("Syp", "pros"), tf_axis="temporal", maternal_pole="uniform", mitotic_dilution=True),
+        Gene("chinmo", "TF", REF_NB_TIME, activators=("Imp",), repressors=("br", "Syp", "pros"), tf_axis="temporal"),
         Gene("EcR", "TF", REF_NB_TIME, activators=("chinmo", "ey", "oc", "Antp", "Ubx"), repressors=("Imp", "pros")),
-        Gene("br", "TF", REF_NB_TIME, activators=("EcR", "chinmo"), repressors=("Imp", "Syp")),
-        Gene("dati", "TF", REF_NB_TIME, activators=("EcR", "br"), repressors=("Imp",)),
-        Gene("Syp", "TF", REF_NB_TIME, activators=("chinmo", "br", "dati", "Syp"), repressors=("Imp",)),
+        Gene("br", "TF", REF_NB_TIME, activators=("EcR", "chinmo"), repressors=("Imp", "Syp"), tf_axis="temporal"),
+        Gene("dati", "TF", REF_NB_TIME, activators=("EcR", "br"), repressors=("Imp",), tf_axis="temporal"),
+        Gene("Syp", "TF", REF_NB_TIME, activators=("chinmo", "br", "dati", "Syp"), repressors=("Imp",), tf_axis="temporal"),
         Gene("gcm", "TF", REF_NB_TIME, activators=("N", "Syp", "gcm"), repressors=("Imp", "Antp")),
         Gene("CycB", "MITOTIC_DRIVER", REF_NB_TIME, activators=("Imp", "EcR", "oc", "ey"), repressors=("pros",), maternal_pole="uniform"),
         Gene("pros", "CELL_CYCLE_EXIT", REF_NB_TIME, activators=("Syp",), repressors=("Imp", "EcR")),
@@ -237,13 +263,32 @@ def build_canonical_gene_graph() -> GeneGraph:
 
 def _shea_ackers_transcription(
     expr: torch.Tensor,
-    w_act: torch.Tensor,
+    w_ap: torch.Tensor,
+    w_dv: torch.Tensor,
+    w_temp: torch.Tensor,
+    w_gen: torch.Tensor,
     w_rep: torch.Tensor,
     basal_mask: torch.Tensor,
     func_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Dimer Hill-Boltzmann promoter occupancy (Alon 2006 / Bintu et al. 2005): P = Z_act^2 / (0.25 + Z_act^2 + Z_rep^2)."""
-    z_act = basal_mask.unsqueeze(0) + expr @ w_act
+    """Combinatorial Enhancersome Hill-Boltzmann occupancy (Nature 2026 segment x column x birth-order AND-cooperativity).
+
+    When an effector enhancer requires spatial AP, DV, and temporal factors, all present axes must be active
+    simultaneously (multiplicative enhancersome assembly), so temporal factors alone cannot turn on an eye or Hox
+    target when its spatial selector (e.g. `ey` or `Ubx`) is absent!
+    """
+    has_ap = (w_ap.sum(dim=0, keepdim=True) > 0)
+    has_dv = (w_dv.sum(dim=0, keepdim=True) > 0)
+    has_temp = (w_temp.sum(dim=0, keepdim=True) > 0)
+    n_axes = (has_ap.float() + has_dv.float() + has_temp.float()).clamp(min=1.0)
+
+    z_ap = torch.where(has_ap, expr @ w_ap, torch.ones_like(expr))
+    z_dv = torch.where(has_dv, expr @ w_dv, torch.ones_like(expr))
+    z_temp = torch.where(has_temp, expr @ w_temp, torch.ones_like(expr))
+    z_prod = (z_ap * z_dv * z_temp).clamp(min=0.0).pow(1.0 / n_axes)
+    z_combinatorial = torch.where(has_ap | has_dv | has_temp, z_prod, torch.zeros_like(expr))
+
+    z_act = basal_mask.unsqueeze(0) + (expr @ w_gen) + z_combinatorial
     z_rep = expr @ w_rep
     z_act2 = z_act * z_act
     occ = z_act2 / (0.25 + z_act2 + z_rep * z_rep)
@@ -262,7 +307,7 @@ def run_gene_ontogeny_automaton(
     """Run the 2D embryonic morphogen + cell-division automaton with zero gene-name strings."""
     dev = torch.device(device)
     n_g = len(gene_graph.genes)
-    w_act, w_rep, func_mask = gene_graph.compile_unweighted_matrices(dev)
+    w_ap, w_dv, w_temp, w_gen, w_rep, func_mask = gene_graph.compile_unweighted_matrices(dev)
 
     morph_cols = [i for i, g in enumerate(gene_graph.genes) if g.role == "MORPHOGEN"]
     lig_cols = [i for i, g in enumerate(gene_graph.genes) if g.role == "JUXTACRINE_LIGAND"]
@@ -315,7 +360,7 @@ def run_gene_ontogeny_automaton(
             sheet[:, :, m_i] = (0.40 * field_2d + 0.20 * (ap_l + ap_r) + 0.10 * (dv_u + dv_d)) * func_mask[m_i]
 
         flat = sheet.reshape(-1, n_g)
-        p_tr = _shea_ackers_transcription(flat, w_act, w_rep, basal_mask, func_mask).reshape(grid_ap, grid_dv, n_g)
+        p_tr = _shea_ackers_transcription(flat, w_ap, w_dv, w_temp, w_gen, w_rep, basal_mask, func_mask).reshape(grid_ap, grid_dv, n_g)
         for g_i, g in enumerate(gene_graph.genes):
             if g.role not in ("MORPHOGEN", "MITOTIC_DRIVER", "CELL_CYCLE_EXIT") and not g.mitotic_dilution:
                 sheet[:, :, g_i] = 0.5 * sheet[:, :, g_i] + 0.5 * p_tr[:, :, g_i]
@@ -327,7 +372,7 @@ def run_gene_ontogeny_automaton(
     divisions_log: list[int] = []
 
     for _ in range(max_division_cycles):
-        p_tr = _shea_ackers_transcription(expr, w_act, w_rep, basal_mask, func_mask)
+        p_tr = _shea_ackers_transcription(expr, w_ap, w_dv, w_temp, w_gen, w_rep, basal_mask, func_mask)
         for g_i, g in enumerate(gene_graph.genes):
             if not g.mitotic_dilution and g.role != "MORPHOGEN":
                 expr[:, g_i] = 0.5 * expr[:, g_i] + 0.5 * p_tr[:, g_i]
@@ -374,7 +419,7 @@ def run_gene_ontogeny_automaton(
 
     # Post-mitotic terminal transcription pass (express CAM_KEY, CAM_LOCK, NT_ENZYME, and ION_CHANNEL genes)
     for _ in range(2):
-        p_term = _shea_ackers_transcription(all_cells, w_act, w_rep, basal_mask, func_mask)
+        p_term = _shea_ackers_transcription(all_cells, w_ap, w_dv, w_temp, w_gen, w_rep, basal_mask, func_mask)
         for g_i, g in enumerate(gene_graph.genes):
             if g.role in ("CAM_KEY", "CAM_LOCK", "NT_ENZYME", "ION_CHANNEL"):
                 all_cells[:, g_i] = p_term[:, g_i]

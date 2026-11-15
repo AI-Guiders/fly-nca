@@ -63,6 +63,8 @@ class FlyNCAComposition(nn.Module):
         frazzled_state: str = "wt",
         device: torch.device | str = "cpu",
         dtype: torch.dtype = torch.float32,
+        *,
+        gene_graph: object | None = None,
     ) -> None:
         super().__init__()
         self.device = torch.device(device)
@@ -81,6 +83,16 @@ class FlyNCAComposition(nn.Module):
         org_counts = self.developed.organ_cell_counts()
         wt_mb_ref = 250.0
         mb_scale = max(0.05, float(org_counts.get("MB", 250)) / wt_mb_ref)
+
+        self.gene_ontogeny = None
+        if gene_graph is not None:
+            from fly_nca.genome.gene_network import GeneGraph, run_gene_ontogeny_automaton
+
+            if isinstance(gene_graph, GeneGraph):
+                self.gene_ontogeny = run_gene_ontogeny_automaton(gene_graph, device=self.device)
+                oc_cells = self.gene_ontogeny.count_expressing("oc")
+                mb_scale = max(0.05, float(oc_cells) / 132.0)
+
         n_kc_grown = int(round(4552 * mb_scale))
 
         self.glia = GlialSubstrateNCA(n_compartments=15, device=self.device, dtype=dtype)
@@ -91,6 +103,17 @@ class FlyNCAComposition(nn.Module):
         self.mushroom_body = MushroomBodyNCA(n_kc=n_kc_grown, device=self.device, dtype=dtype)
         self.central_complex = CentralComplexNCA(device=self.device, dtype=dtype)
         self.vnc_autopilot = VNCAutopilotNCA(frazzled_state=frazzled_state, device=self.device, dtype=dtype)
+
+        if self.gene_ontogeny is not None:
+            ey_like = self.gene_ontogeny.count_expressing("ey") + (
+                self.gene_ontogeny.count_expressing("Pax6_mouse")
+                if "Pax6_mouse" in self.gene_ontogeny.gene_names
+                else 0
+            )
+            if ey_like == 0:
+                self.optic_lobe.retinal_gain = 0.0
+            if self.gene_ontogeny.count_expressing("Ubx") == 0:
+                self.vnc_autopilot.ablation_mask[:6] = 0.0
 
         self.last_an_efference = torch.zeros(5, device=self.device, dtype=dtype)
         self.frame_tick_id: int = 0

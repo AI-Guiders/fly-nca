@@ -392,7 +392,6 @@ def execute_scenario_protocol(
 
     elif sid == "pmc6451361_hunger_dawed_protein_switch":
         # Open Biol 2019 (PMC6451361): Two-choice sucrose vs yeast under sugar starvation, protein starvation, & full crop
-        sensor = arena.step_physics(fly.vnc_autopilot.step_vnc(arena.step_physics(torch.zeros((6, 4))), dt_ms=0.0) if False else None, dt_ms=0.0) if False else None  # noqa: E501
         from fly_nca.body.adapter import MotorOut
 
         sensor_patch = arena.step_physics(MotorOut.zeros(device=fly.device), dt_ms=0.0)

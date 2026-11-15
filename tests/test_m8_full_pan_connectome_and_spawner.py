@@ -220,13 +220,12 @@ def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
     wt_graph = build_canonical_gene_graph()
     ecr_minus_graph = wt_graph.with_knockout("EcR")
     ey_minus_graph = wt_graph.with_knockout("ey")
-    # Gehring 1995 (Science): ectopic expression of mouse Pax6 homolog in Antp+ thoracic primordium
+    # Gehring 1995 (Science): ectopic expression of mouse Pax6 homolog in Antp+ thoracic primordium (zero feed_into_targets!)
     gehring_pax6_graph = ey_minus_graph.with_duplication(
         "ey",
         "Pax6_mouse",
         replace_activators=("Antp",),
         replace_repressors=(),
-        feed_into_targets=(("dpr5", "activate"), ("dpr12", "activate"), ("DIP-gamma", "activate")),
     )
     ubx_minus_graph = wt_graph.with_knockout("Ubx")
     notch2nl_graph = wt_graph.with_duplication(
@@ -243,11 +242,16 @@ def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
     res_ubx = run_gene_ontogeny_automaton(ubx_minus_graph)
     res_n2nl = run_gene_ontogeny_automaton(notch2nl_graph)
 
-    # 2. Gehring (1995) eyeless / Pax6 deep homology: ey^- ablates eye cells; mouse Pax6 under Antp induces ectopic eye cascade!
+    # 2. Gehring (1995) eyeless / Pax6 deep homology: ey^- ablates eye cells & dpr5/dpr12; mouse Pax6 under Antp restores them!
     assert res_wt.count_expressing("ey") > 0
+    assert res_wt.count_expressing("dpr5") > 0
+    assert res_wt.count_expressing("dpr12") > 0
     assert res_ey.count_expressing("ey") == 0
+    assert res_ey.count_expressing("dpr5") == 0
+    assert res_ey.count_expressing("dpr12") == 0
     assert res_gehring.count_expressing("Pax6_mouse") > 0
-    assert res_gehring.count_expressing("dpr5") > res_ey.count_expressing("dpr5")
+    assert res_gehring.count_expressing("dpr5") > 100
+    assert res_gehring.count_expressing("dpr12") > 100
 
     # 3. Lewis (1978/1995) Ubx^- knockout eliminates Ubx+ cells and expands Antp+ / T2_WingMesothorax domain
     assert res_wt.count_expressing("Ubx") > 0
@@ -270,3 +274,23 @@ def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
     assert rep_n2nl.matched_phenotype == "chordata.pallium_notch2nl_expanded"
     assert rep_ubx.domain_counts["T3_HaltereMetathorax"] == 0
     assert rep_ubx.domain_counts["T2_WingMesothorax"] > rep_wt.domain_counts["T2_WingMesothorax"]
+
+    # 6. Closed-loop FlyNCAComposition on FastTensorArena3D directly reflects GeneGraph mutations
+    from fly_nca.body import FastTensorArena3D
+    from fly_nca.composition import FlyNCAComposition
+
+    arena = FastTensorArena3D()
+    arena.looming_rate = 0.90
+    fly_wt = FlyNCAComposition(gene_graph=wt_graph)
+    fly_ey_ko = FlyNCAComposition(gene_graph=ey_minus_graph)
+    fly_gehring = FlyNCAComposition(gene_graph=gehring_pax6_graph)
+    fly_ubx_ko = FlyNCAComposition(gene_graph=ubx_minus_graph)
+
+    tel_wt = fly_wt.step_cognitive_frame(arena, step_body=False)
+    tel_ey = fly_ey_ko.step_cognitive_frame(arena, step_body=False)
+    tel_gehring = fly_gehring.step_cognitive_frame(arena, step_body=False)
+
+    assert tel_wt.vis.lc4_lplc2_looming > 0.8
+    assert tel_ey.vis.lc4_lplc2_looming == 0.0
+    assert tel_gehring.vis.lc4_lplc2_looming > 0.8
+    assert float(fly_ubx_ko.vnc_autopilot.ablation_mask[:6].sum().item()) == 0.0

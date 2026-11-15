@@ -109,7 +109,8 @@ def develop_fly_from_genome(
     dev = torch.device(device)
 
     # Step 1: Run Syncytial Blastoderm -> Gap + Pair-Rule -> Hox segmentation NCA
-    _ = genome.run_french_flag_segmentation_nca(n_positions=64, steps=16, recorder=recorder)
+    embryo_readout = genome.run_syncytial_embryogenesis_nca(n_positions=64, gap_steps=16, recorder=recorder)
+    active_embryo_segs = set(embryo_readout.segment_ids.unique().tolist())
     seg_map = {name: idx for idx, name in enumerate(SEGMENTS_8)}
     org_map = {name: idx for idx, name in enumerate(ORGAN_NAMES)}
 
@@ -128,6 +129,8 @@ def develop_fly_from_genome(
 
     for lin_idx, hl in enumerate(genome.hemilineages):
         s_id = seg_map[hl.segment]
+        if s_id not in active_embryo_segs and min(active_embryo_segs, default=0) > s_id:
+            s_id = min(active_embryo_segs)
         o_id = org_map[hl.organ_target]
         sign_val = NT_SIGN_MAP[hl.fast_nt]
 

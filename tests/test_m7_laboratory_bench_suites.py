@@ -40,7 +40,7 @@ def test_all_9_published_wetlab_protocols_match_empirical_results() -> None:
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     rows = run_suites(SHIP_SUITE_IDS, device=dev)
-    assert len(rows) == 14
+    assert len(rows) == 15
     failed = [r for r in rows if not r["ok"]]
     assert failed == []
 

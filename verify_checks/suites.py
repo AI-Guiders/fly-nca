@@ -180,14 +180,21 @@ def check_gene_network_purity_and_fca_grounding(device: str = "cpu") -> dict[str
     )
 
     res_wt = run_gene_ontogeny_automaton(wt_graph, device=device)
-    res_ey_ko = run_gene_ontogeny_automaton(wt_graph.with_knockout("ey"), device=device)
+    ey_ko = wt_graph.with_knockout("ey")
+    res_ey_ko = run_gene_ontogeny_automaton(ey_ko, device=device)
+    gehring_graph = ey_ko.with_duplication("ey", "Pax6_mouse", replace_activators=("Antp",), replace_repressors=())
+    res_gehring = run_gene_ontogeny_automaton(gehring_graph, device=device)
     res_ubx_ko = run_gene_ontogeny_automaton(wt_graph.with_knockout("Ubx"), device=device)
 
     ok = (
         len(leaked_gene_strings) == 0
         and unweighted_enhancers
         and res_wt.count_expressing("ey") > 0
+        and res_wt.count_expressing("dpr5") > 0
         and res_ey_ko.count_expressing("ey") == 0
+        and res_ey_ko.count_expressing("dpr5") == 0
+        and res_gehring.count_expressing("Pax6_mouse") > 0
+        and res_gehring.count_expressing("dpr5") > 0
         and res_wt.count_expressing("Ubx") > 0
         and res_ubx_ko.count_expressing("Ubx") == 0
     )
@@ -198,7 +205,9 @@ def check_gene_network_purity_and_fca_grounding(device: str = "cpu") -> dict[str
         "unweighted_enhancers_with_source_ref": unweighted_enhancers,
         "n_genes": len(wt_graph.genes),
         "wt_ey_cells": res_wt.count_expressing("ey"),
-        "ey_ko_cells": res_ey_ko.count_expressing("ey"),
+        "wt_dpr5_cells": res_wt.count_expressing("dpr5"),
+        "ey_ko_dpr5_cells": res_ey_ko.count_expressing("dpr5"),
+        "gehring_pax6_dpr5_cells": res_gehring.count_expressing("dpr5"),
         "wt_ubx_cells": res_wt.count_expressing("Ubx"),
         "ubx_ko_cells": res_ubx_ko.count_expressing("Ubx"),
     }
@@ -224,6 +233,14 @@ def check_shiu2024_nature_sez_optogenetics_blind_holdout(device: str = "cpu") ->
     sub = fly.substrate
     per_mn = sub.cell_groups["mn_proboscis_per"]
 
+    kc_bio = BANC_EMPIRICAL_BIOPHYSICS["kenyon_cell"]
+    mbon_bio = BANC_EMPIRICAL_BIOPHYSICS["mushroom_body_output_neuron"]
+    dan_bio = BANC_EMPIRICAL_BIOPHYSICS["mushroom_body_dopaminergic_neuron"]
+    lhon_bio = BANC_EMPIRICAL_BIOPHYSICS["lateral_horn_output_neuron"]
+    lh_ln_bio = BANC_EMPIRICAL_BIOPHYSICS["lateral_horn_local_neuron"]
+    leg_mn_bio = BANC_EMPIRICAL_BIOPHYSICS["leg_motor_neuron"]
+    sens_bio = BANC_EMPIRICAL_BIOPHYSICS["sensory"]
+
     # Fast single-source zero-shot propagation across all 12 positive lines + representative negative controls
     pos_depol: list[float] = []
     neg_depol: list[float] = []
@@ -244,14 +261,18 @@ def check_shiu2024_nature_sez_optogenetics_blind_holdout(device: str = "cpu") ->
         for _ in range(6):
             a_col = (fly.a * fly.sex_cell_mask).unsqueeze(1)
             aa_mod = torch.matmul(sub.w_port3_aa, a_col).squeeze(1)
-            a_presyn = (fly.a * fly.sex_cell_mask * (1.0 + 1.4 * aa_mod).clamp(0.02, 1.80)).clamp(0.0, 1.0).unsqueeze(1)
+            a_presyn = (
+                fly.a * fly.sex_cell_mask * (1.0 + lh_ln_bio.port_axon_dendrite * aa_mod).clamp(kc_bio.ie_ratio, 1.0 + leg_mn_bio.inh_share)
+            ).clamp(0.0, 1.0).unsqueeze(1)
             i_exc = torch.matmul(sub.w_port1_ach, a_presyn).squeeze(1) + i_opto
             g_sh = torch.matmul(sub.w_port2_shunt, a_presyn).squeeze(1)
             g_rt = torch.matmul(sub.w_port2_root, a_presyn).squeeze(1)
-            net_syn = i_exc - 0.55 * sub.fca_glucl_rdl * g_sh
-            i_dend = torch.tanh(2.6 * net_syn / (1.0 + 0.35 * sub.alpha_shunt * g_sh)) / (1.0 + 2.8 * g_rt)
-            fly.v = (0.5 * fly.v + 0.5 * i_dend).clamp(-1.0, 1.0)
-            fly.a = (torch.relu(fly.v - 0.02) * 3.0).clamp(0.0, 1.0)
+            net_syn = i_exc - leg_mn_bio.inh_share * sub.fca_glucl_rdl * g_sh
+            i_dend = torch.tanh(mbon_bio.dendritic_shunt_gain * net_syn / (1.0 + sens_bio.ie_ratio * sub.alpha_shunt * g_sh)) / (
+                1.0 + dan_bio.root_shunt_gain * g_rt
+            )
+            fly.v = (leg_mn_bio.inh_share * fly.v + leg_mn_bio.inh_share * i_dend).clamp(-1.0, 1.0)
+            fly.a = (torch.relu(fly.v - kc_bio.ie_ratio) * lhon_bio.dendritic_shunt_gain).clamp(0.0, 1.0)
         resp = float(fly.v[per_mn].max().item())
         if opto_rate > 0.0:
             pos_depol.append(resp)
