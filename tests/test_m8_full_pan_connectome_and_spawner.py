@@ -305,3 +305,49 @@ def test_gene_regulatory_network_automaton_mutations_and_phylogeny() -> None:
     assert imp_rec.header["channel"] == ImpulseChannel.GENE_ONTOGENY_AUTOMATON.value
     assert imp_rec.header["organs_touched"] == ["OOCYTE_SHEET", "BLASTODERM_2D", "NEUROECTODERM", "CONNECTOME_CAM"]
     assert len(imp_rec.events) == 4
+
+
+def test_mujoco_xray_inspector_and_6_leg_ground_contact() -> None:
+    """7. Verify the AI-Friendly MuJoCo X-Ray Inspector (`inspect_physics_state`) confirms all 6 legs touch ground."""
+    from flygym import Simulation
+    from flygym.anatomy import AxisOrder, JointPreset, Skeleton
+    from flygym.compose import ActuatorType, FlatGroundWorld, KinematicPosePreset, NeuroMechFly
+    from flygym.utils.math import Rotation3D
+    from fly_nca.body.mujoco_flygym import MuJoCoFlyBodyAdapter
+    from fly_nca.genome.spawner import FlySpawner
+
+    spawner = FlySpawner(seed=108, device="cpu")
+    fly = spawner.spawn_fly(sex="M", pos_xyz=(0.0, 0.0, 0.0), yaw_rad=0.0)
+
+    s_legs = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.LEGS_ACTIVE_ONLY)
+    s_all = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, joint_preset=JointPreset.ALL_BIOLOGICAL)
+    leg_joint_set = set(s_legs.anatomical_joints)
+    clean_anat_joints = [
+        aj
+        for aj in s_all.anatomical_joints
+        if (aj in leg_joint_set)
+        or (aj.child.name in ("l_wing", "r_wing", "l_haltere", "r_haltere", "c_head", "c_rostrum", "c_haustellum", "c_abdomen12"))
+    ]
+    skel = Skeleton(axis_order=AxisOrder.YAW_PITCH_ROLL, anatomical_joints=clean_anat_joints)
+    act_dofs = list(skel.iter_jointdofs())
+
+    nmf = NeuroMechFly(name="fly_m")
+    nmf.add_joints(skel, neutral_pose=KinematicPosePreset.NEUTRAL, stiffness=3.0, damping=0.4)
+    nmf.add_actuators(act_dofs, ActuatorType.POSITION, neutral_input=KinematicPosePreset.NEUTRAL, kp=65.0)
+    nmf.add_leg_adhesion()
+
+    world = FlatGroundWorld()
+    world.add_fly(nmf, spawn_position=(0.0, 0.0, 0.55), spawn_rotation=Rotation3D("quat", (1.0, 0.0, 0.0, 0.0)))
+    sim = Simulation(world)
+    sim.reset()
+
+    adapter = MuJoCoFlyBodyAdapter(sim, nmf, device="cpu").connect(fly)
+    for _ in range(120):
+        adapter.apply_motor_to_mujoco(adapter.last_motor)
+        sim.step()
+    adapter.sync_from_mujoco(full_proprioception=True)
+
+    rep = adapter.inspect_physics_state()
+    assert rep["n_legs_on_ground"] == 6
+    assert rep["n_self_collisions"] == 0
+    assert rep["upright_z_cosine"] > 0.98

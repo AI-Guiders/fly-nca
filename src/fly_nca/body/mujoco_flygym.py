@@ -181,9 +181,9 @@ class MuJoCoFlyBodyAdapter:
             self.sim.mj_data.xfrc_applied[thorax_id, :3] = [fx, fy, lift_f]
         else:
             self.sim.mj_data.xfrc_applied[thorax_id, :3] = 0.0
-        # Vestibular / campaniform anti-gravity righting torque (u_body x z_world) keeps dorsal thorax upright
-        self.sim.mj_data.xfrc_applied[thorax_id, 3] = 18.0 * float(R_th[1, 2])
-        self.sim.mj_data.xfrc_applied[thorax_id, 4] = -18.0 * float(R_th[0, 2])
+        # Vestibular / campaniform anti-gravity righting torque on roll only; let 6 legs define natural pitch tripod/hexapod!
+        self.sim.mj_data.xfrc_applied[thorax_id, 3] = 2.0 * float(R_th[1, 2])
+        self.sim.mj_data.xfrc_applied[thorax_id, 4] = 0.0
         self.sim.mj_data.xfrc_applied[thorax_id, 5] = 0.0
         self.sim.set_actuator_inputs(self.nmf.name, ActuatorType.POSITION, ctrl)
         self.sim.set_leg_adhesion_states(self.nmf.name, adh)
@@ -273,6 +273,132 @@ class MuJoCoFlyBodyAdapter:
             self.apply_motor_to_mujoco(motor)
         return self.read_sensors(proboscis_per=float(motor.proboscis_per), dt_ms=float(dt_ms))
 
+    def inspect_physics_state(self) -> dict[str, Any]:
+        """AI-Friendly X-Ray Inspector: structured JSON telemetry of MuJoCo contacts, forces, joint limits, and self-collisions."""
+        m = self.sim.mj_model
+        d = self.sim.mj_data
+        prefix = f"{self.nmf.name}/"
+
+        thorax_mm = self.sim.get_body_positions(self.nmf.name)[0]
+        th_id = int(self.sim._internal_bodyids_by_fly[self.nmf.name][0])
+        R_th = d.xmat[th_id].reshape(3, 3)
+        yaw = float(math.atan2(float(R_th[1, 0]), float(R_th[0, 0])))
+        pitch = float(math.asin(max(-1.0, min(1.0, float(-R_th[2, 0])))))
+        roll = float(math.atan2(float(R_th[2, 1]), float(R_th[2, 2])))
+
+        # 1. Per-leg ground contact forces in world & body frame
+        c_found, c_forces, _, _, _, _ = self.sim.get_ground_contact_info(self.nmf.name)
+        leg_names_fg = ("lf", "lm", "lh", "rf", "rm", "rh")
+        leg_names_nca = ("L1_front_left", "L2_mid_left", "L3_hind_left", "R1_front_right", "R2_mid_right", "R3_hind_right")
+        leg_contacts: dict[str, Any] = {}
+        for i, (fg_n, nca_n) in enumerate(zip(leg_names_fg, leg_names_nca)):
+            f_vec = [round(float(x), 4) for x in c_forces[i]]
+            f_norm = round(float(np.linalg.norm(c_forces[i])), 4)
+            leg_contacts[nca_n] = {
+                "flygym_leg": fg_n,
+                "touching_ground": bool(c_found[i] > 0),
+                "force_xyz_mN": f_vec,
+                "force_norm_mN": f_norm,
+            }
+
+        # 2. Detailed raw MuJoCo contact list (ground vs self-collisions)
+        self_collisions: list[dict[str, Any]] = []
+        ground_contacts_raw: list[dict[str, Any]] = []
+        f6 = np.zeros(6, dtype=np.float64)
+        for ci in range(int(d.ncon)):
+            con = d.contact[ci]
+            g1 = mj.mj_id2name(m, mj.mjtObj.mjOBJ_GEOM, int(con.geom1)) or f"geom_{con.geom1}"
+            g2 = mj.mj_id2name(m, mj.mjtObj.mjOBJ_GEOM, int(con.geom2)) or f"geom_{con.geom2}"
+            if not (g1.startswith(prefix) or g2.startswith(prefix)):
+                continue
+            mj.mj_contactForce(m, d, ci, f6)
+            entry = {
+                "geom1": g1,
+                "geom2": g2,
+                "dist_mm": round(float(con.dist), 5),
+                "normal_force_mN": round(float(abs(f6[0])), 4),
+                "friction_force_mN": round(float(np.linalg.norm(f6[1:3])), 4),
+            }
+            if g1.startswith(prefix) and g2.startswith(prefix):
+                self_collisions.append(entry)
+            else:
+                ground_contacts_raw.append(entry)
+
+        # 3. Joint limit hits across all actuated DOFs of this fly
+        joint_limit_hits: list[dict[str, Any]] = []
+        for jid in range(int(m.njnt)):
+            jname = mj.mj_id2name(m, mj.mjtObj.mjOBJ_JOINT, jid) or ""
+            if not jname.startswith(prefix) or int(m.jnt_limited[jid]) == 0:
+                continue
+            qadr = int(m.jnt_qposadr[jid])
+            qval = float(d.qpos[qadr])
+            jmin, jmax = float(m.jnt_range[jid, 0]), float(m.jnt_range[jid, 1])
+            margin = min(abs(qval - jmin), abs(jmax - qval))
+            if margin < 0.03:
+                joint_limit_hits.append({
+                    "joint": jname[len(prefix) :],
+                    "angle_rad": round(qval, 4),
+                    "range_rad": [round(jmin, 4), round(jmax, 4)],
+                    "hit_bound": "min" if abs(qval - jmin) <= abs(jmax - qval) else "max",
+                })
+
+        return {
+            "fly_name": self.nmf.name,
+            "sim_time_ms": round(float(self.time_ms), 3),
+            "thorax_pos_mm": [round(float(x), 4) for x in thorax_mm],
+            "thorax_rpy_rad": [round(roll, 4), round(pitch, 4), round(yaw, 4)],
+            "upright_z_cosine": round(float(R_th[2, 2]), 4),
+            "leg_ground_contacts": leg_contacts,
+            "n_legs_on_ground": int(sum(1 for v in leg_contacts.values() if v["touching_ground"])),
+            "n_self_collisions": len(self_collisions),
+            "self_collisions": self_collisions[:10],
+            "n_joint_limit_hits": len(joint_limit_hits),
+            "joint_limit_hits": joint_limit_hits[:12],
+            "ground_contacts_detail": ground_contacts_raw[:12],
+        }
+
+    def render_diagnostic_views(
+        self,
+        output_path: Path | str,
+        *,
+        width: int = 480,
+        height: int = 360,
+        show_contact_forces: bool = True,
+    ) -> Path:
+        """Render a 3-panel orthographic diagnostic sheet (Side, Top, Front-ISO) with MuJoCo contact forces."""
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        m = self.sim.mj_model
+        d = self.sim.mj_data
+        thorax_mm = self.sim.get_body_positions(self.nmf.name)[0]
+
+        renderer = mj.Renderer(m, height=height, width=width)
+        vopt = mj.MjvOption()
+        if show_contact_forces:
+            vopt.flags[mj.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+            vopt.flags[mj.mjtVisFlag.mjVIS_CONTACTFORCE] = True
+
+        views = [
+            ("SIDE", 0.0, -15.0, 5.2),
+            ("TOP", 90.0, -89.0, 6.0),
+            ("ISO_3D", 135.0, -25.0, 5.0),
+        ]
+        panels: list[np.ndarray] = []
+        for _, az, el, dist in views:
+            cam = mj.MjvCamera()
+            mj.mjv_defaultFreeCamera(m, cam)
+            cam.lookat[:] = thorax_mm
+            cam.azimuth = az
+            cam.elevation = el
+            cam.distance = dist
+            renderer.update_scene(d, camera=cam, scene_option=vopt)
+            panels.append(renderer.render().copy())
+        renderer.close()
+
+        combined = np.concatenate(panels, axis=1)
+        Image.fromarray(combined).save(out)
+        return out
+
 
 def _set_fly_geoms_visibility(sim: Simulation, nmf_obj: NeuroMechFly, visible: bool) -> None:
     """Toggle visibility of a pre-allocated NeuroMechFly body without mutating qpos/qvel."""
@@ -338,17 +464,18 @@ def motor_out_to_neuromechfly_ctrl(
             if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
                 ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] += 0.22 * coxa_fwd
             if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] -= 0.22 * max(0.0, troch_lift)
+                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += 0.162 - 0.22 * max(0.0, troch_lift)
             if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
-                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] -= 0.20 * tibia_ext
+                ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.095 - 0.20 * tibia_ext
             if f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch" in dof_idx:
                 ctrl[dof_idx[f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch"]] -= 0.12 * tarsus_flx
         else:
+            hind_plant = -0.05 if fg_leg in ("lh", "rh") else 0.0
             if f"c_thorax-{fg_leg}_coxa-pitch" in dof_idx:
                 ctrl[dof_idx[f"c_thorax-{fg_leg}_coxa-pitch"]] -= 0.22 * coxa_fwd
             if f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch" in dof_idx:
                 jump_push = 0.45 * float(motor.jump_ttmn_burst) if fg_leg in ("lm", "rm") else 0.0
-                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] -= 0.20 * max(0.0, troch_lift) - jump_push
+                ctrl[dof_idx[f"{fg_leg}_coxa-{fg_leg}_trochanterfemur-pitch"]] += hind_plant - 0.20 * max(0.0, troch_lift) - jump_push
             if f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch" in dof_idx:
                 ctrl[dof_idx[f"{fg_leg}_trochanterfemur-{fg_leg}_tibia-pitch"]] += 0.20 * tibia_ext
             if f"{fg_leg}_tibia-{fg_leg}_tarsus1-pitch" in dof_idx:
