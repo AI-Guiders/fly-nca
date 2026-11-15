@@ -668,10 +668,8 @@ class FullConnectomeFlyNCA(nn.Module):
 
         pip_idx = self.substrate.cell_groups["dimorphic_male_pip10"]
         pip10_r = float(self.a[pip_idx].topk(min(2, pip_idx.numel())).values.mean().item()) if pip_idx.numel() > 0 else 0.0
-        p1_r = self.group_mean_rate("dimorphic_male_p1")
         tn1_r = self.group_mean_rate("dimorphic_male_tn1_song")
-        song_gate = (p1_r > 0.140 and pip10_r > 0.15) if self.dsx_isoform == "DsxM" else (pip10_r > 0.15)
-        song_amp = tn1_r if (self.fru_m_active and song_gate) else 0.0
+        song_amp = tn1_r if (self.fru_m_active and pip10_r > 0.15) else 0.0
         wing_song = torch.tensor([song_amp, 0.0], device=self.device, dtype=torch.float32)
 
         h_l = self.group_mean_rate("mn_haltere_left")

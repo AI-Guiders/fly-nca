@@ -556,6 +556,16 @@ class MultiFlySocialArena3D:
                 f_i.receptivity_score = round(conn_out.female_pc1_receptivity_rate, 4)
                 f_i.boxing_intensity = 0.0
 
+                if f_i.genome.fru_m_active and nearest_j is not None and not neighbor_is_female and nearest_dist < 0.015:
+                    vpm4_drive = (0.75 + 0.25 * cva_conc) / max(0.4, f_i.genome.oaa2r_brake_scale)
+                    mb_agg = f_i.composition.mushroom_body.step_mb(
+                        telem.chem.pn_glomeruli_50,
+                        vpm4_octopamine_drive=min(1.0, vpm4_drive),
+                    )
+                    f_i.boxing_intensity = round(float(mb_agg.aggression_boxing_drive), 4)
+                    f_i.current_behavior = (
+                        "MALE_BOXING_ESCALATION" if not f_i.wing_song_active else "MALE_COURTSHIP_SONG"
+                    )
                 if f_i.wing_song_active:
                     f_i.current_behavior = (
                         "MALE_COURTSHIP_SONG"
@@ -563,13 +573,7 @@ class MultiFlySocialArena3D:
                         else "FEMALE_FRUM_COURTSHIP_SONG"
                     )
                     telem.motor.wing_song_mode[0] = float(conn_out.male_tn1_wing_song_rate)
-                elif f_i.genome.fru_m_active and nearest_j is not None and not neighbor_is_female and nearest_dist < 0.015:
-                    vpm4_drive = (0.75 + 0.25 * cva_conc) / max(0.4, f_i.genome.oaa2r_brake_scale)
-                    mb_agg = f_i.composition.mushroom_body.step_mb(
-                        telem.chem.pn_glomeruli_50,
-                        vpm4_octopamine_drive=min(1.0, vpm4_drive),
-                    )
-                    f_i.boxing_intensity = round(float(mb_agg.aggression_boxing_drive), 4)
+                elif f_i.boxing_intensity > 0.0:
                     f_i.current_behavior = "MALE_BOXING_ESCALATION"
                 elif f_i.oviposition_active:
                     f_i.current_behavior = "FEMALE_OVIPOSITION"
