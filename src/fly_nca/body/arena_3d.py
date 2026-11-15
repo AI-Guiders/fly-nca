@@ -63,6 +63,11 @@ class FastTensorArena3D:
         self.leg_load = torch.full((6,), 0.5, device=dev, dtype=self.dtype)
         self.bristle_touch = torch.zeros(6, device=dev, dtype=self.dtype)
 
+    def connect(self, fly: object) -> FastTensorArena3D:
+        """Bind a living Fly-NCA connectome/organism to this peripheral body adapter."""
+        setattr(fly, "arena", self)
+        return self
+
     @property
     def head_world_rpy(self) -> torch.Tensor:
         """World-frame head orientation = thorax orientation + neck gimbal angles."""
@@ -80,9 +85,11 @@ class FastTensorArena3D:
 
     def step_physics(self, motor: MotorOut, dt_ms: float = TAU_FAST_MS) -> SensorIn:
         """Advance 3D body kinematics, aerodynamics, and sensory fields by dt_ms (default 1 tau_fast = 1.711 ms)."""
+        if float(dt_ms) <= 0.0:
+            return self.read_sensors()
+
         dt_s = float(dt_ms) * 1e-3
         self.time_ms += float(dt_ms)
-        dev = self.pos_xyz.device
 
         # 1. Update 6 legs x 4 joints (1 cognitive wingbeat frame = TAU_FRAME_MS = 4.038 ms)
         alpha_joint = min(1.0, dt_ms / TAU_FRAME_MS)
@@ -166,7 +173,11 @@ class FastTensorArena3D:
         if on_ground and abs(fwd_speed) < 0.002 and float(motor.leg_joint_drive[:, 3].abs().mean()) > 0.2:
             self.bristle_touch = (self.bristle_touch - 0.15 * dt_ms).clamp(0.0, 1.0)
 
-        # 5. Compute Sensory Periphery (SensorIn)
+        return self.read_sensors(proboscis_per=float(motor.proboscis_per), dt_ms=float(dt_ms))
+
+    def read_sensors(self, proboscis_per: float = 0.0, dt_ms: float = 0.0) -> SensorIn:
+        """Encode current body state and environmental fields into a SensorIn afferent packet."""
+        dev = self.pos_xyz.device
         head_yaw = float(self.head_world_rpy[2].item())
         sun_ego = math.atan2(
             math.sin(self.sun_azimuth_world_rad - head_yaw),
@@ -210,7 +221,7 @@ class FastTensorArena3D:
             if dist_body < 0.008:
                 if plume.is_sweet_food:
                     taste[0] = 1.0
-                    if motor.proboscis_per > 0.5:
+                    if proboscis_per > 0.5 and dt_ms > 0.0:
                         self.crop_stretch = min(1.0, self.crop_stretch + 0.01 * dt_ms)
                 if plume.is_bitter_shock:
                     taste[1] = 1.0

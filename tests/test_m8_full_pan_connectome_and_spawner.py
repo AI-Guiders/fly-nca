@@ -196,7 +196,7 @@ def test_multigenerational_colony_ontogeny_egg_larva_pupa_adult_and_3d_viewer(tm
     from fly_nca.app.viewer3d import export_colony_3d_viewer_html
 
     out_html = tmp_path / "colony_3d_viewer.html"
-    res = export_colony_3d_viewer_html(output_path=out_html, n_founders=2, frames=14, seed=108)
+    res = export_colony_3d_viewer_html(output_path=out_html, n_founders=2, frames=18, seed=108)
     assert out_html.is_file()
     assert res["n_final_colony"] >= 3
     event_types = [ev["event"] for ev in res["events"]]
@@ -204,3 +204,32 @@ def test_multigenerational_colony_ontogeny_egg_larva_pupa_adult_and_3d_viewer(tm
     assert "HATCH_EGG_TO_LARVA" in event_types
     assert "PUPARIATION_20E_PULSE" in event_types
     assert "ADULT_ECLOSION_189766_CELLS" in event_types
+
+
+def test_evo_devo_parameterized_genomes_across_phylogeny() -> None:
+    """6. Verify that the same morphogenesis automaton grows distinct organisms from parameterized genomes."""
+    from fly_nca.genome.fly_genome import FlyGenome
+    from fly_nca.genome.morphogenesis import develop_fly_from_genome
+
+    worm = develop_fly_from_genome(FlyGenome.urbilateria_worm(), stage="adult", scale=0.1)
+    fly_wt = develop_fly_from_genome(FlyGenome.drosophila_wt(), stage="adult", scale=0.1)
+    fly_ubx = develop_fly_from_genome(FlyGenome.ultrabithorax_bithorax_mutant(), stage="adult", scale=0.1)
+    chordate = develop_fly_from_genome(FlyGenome.vertebrate_pallium_expansion(), stage="adult", scale=0.1)
+
+    # 1. Ancestral Wave 1 core is conserved across all four genomes!
+    assert worm.n_wave1_primary == fly_wt.n_wave1_primary == fly_ubx.n_wave1_primary == chordate.n_wave1_primary
+    assert worm.n_wave2_secondary == 0
+    assert fly_wt.n_wave2_secondary > worm.n_wave1_primary
+
+    # 2. Homeotic Ultrabithorax (T3 -> T2) expands thoracic VNC while keeping MB/CX unchanged
+    c_wt = fly_wt.organ_cell_counts()
+    c_ubx = fly_ubx.organ_cell_counts()
+    assert c_ubx["VNC"] > c_wt["VNC"]
+    assert c_ubx["MB"] == c_wt["MB"]
+
+    # 3. Pallium/Basal-Ganglia Notch heterochrony expands MB & CX while conserving the VNC brainstem/spinal core
+    c_ch = chordate.organ_cell_counts()
+    assert c_ch["VNC"] == c_wt["VNC"]
+    assert c_ch["MB"] > 3 * c_wt["MB"]
+    assert c_ch["CX"] > c_wt["CX"]
+    assert chordate.tract_weight("MB", "LH_SPIN") > fly_wt.tract_weight("MB", "LH_SPIN")

@@ -578,10 +578,25 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
         # Motor & Visceral Effectors (1,026 cells)
         "mn_wing_power_left": _idx((csc == "wing_power_motor_neuron") & (b_side == "left")),
         "mn_wing_power_right": _idx((csc == "wing_power_motor_neuron") & (b_side == "right")),
+        "mn_wing_dlm_left": _idx((csc == "wing_power_motor_neuron") & (ptt == "dorsal_longitudinal_muscle") & (b_side == "left")),
+        "mn_wing_dlm_right": _idx((csc == "wing_power_motor_neuron") & (ptt == "dorsal_longitudinal_muscle") & (b_side == "right")),
+        "mn_wing_dvm_left": _idx((csc == "wing_power_motor_neuron") & (ptt == "dorsoventral_muscle") & (b_side == "left")),
+        "mn_wing_dvm_right": _idx((csc == "wing_power_motor_neuron") & (ptt == "dorsoventral_muscle") & (b_side == "right")),
         "mn_wing_steer_left": _idx(csc.isin(["wing_steering_motor_neuron", "wing_tension_motor_neuron"]) & (b_side == "left")),
         "mn_wing_steer_right": _idx(csc.isin(["wing_steering_motor_neuron", "wing_tension_motor_neuron"]) & (b_side == "right")),
+        "mn_wing_b1_b2_left": _idx(ptt.isin(["b1_muscle", "b2_muscle", "b3_muscle"]) & (b_side == "left")),
+        "mn_wing_b1_b2_right": _idx(ptt.isin(["b1_muscle", "b2_muscle", "b3_muscle"]) & (b_side == "right")),
+        "mn_wing_i1_iii_left": _idx(ptt.isin(["i1_muscle", "i2_muscle", "iii1_muscle", "iii3_muscle", "iii4_muscle"]) & (b_side == "left")),
+        "mn_wing_i1_iii_right": _idx(ptt.isin(["i1_muscle", "i2_muscle", "iii1_muscle", "iii3_muscle", "iii4_muscle"]) & (b_side == "right")),
+        "mn_wing_hg_left": _idx(ptt.isin(["iv1_muscle", "iv2_muscle", "iv3_muscle", "iv4_muscle"]) & (b_side == "left")),
+        "mn_wing_hg_right": _idx(ptt.isin(["iv1_muscle", "iv2_muscle", "iv3_muscle", "iv4_muscle"]) & (b_side == "right")),
         "mn_haltere_left": _idx(csc.str.startswith("haltere_") & (b_side == "left")),
         "mn_haltere_right": _idx(csc.str.startswith("haltere_") & (b_side == "right")),
+        "mn_antenna_left": _idx((csc == "antenna_motor_neuron") & (b_side == "left")),
+        "mn_antenna_right": _idx((csc == "antenna_motor_neuron") & (b_side == "right")),
+        "mn_eye_left": _idx((csc == "eye_motor_neuron") & (b_side == "left")),
+        "mn_eye_right": _idx((csc == "eye_motor_neuron") & (b_side == "right")),
+        "mn_abdomen_dorsal_ventral": _idx(csc.isin(["abdomen_motor_neuron", "thoracic_abdominal_segmental_motor_neuron"]) & (bpe != "uterus")),
         "mn_neck_roll_left": _idx(csc.isin(["neck_roll_motor_neuron", "neck_roll_pitch_motor_neuron"]) & (b_side == "left")),
         "mn_neck_roll_right": _idx(csc.isin(["neck_roll_motor_neuron", "neck_roll_pitch_motor_neuron"]) & (b_side == "right")),
         "mn_neck_pitch": _idx(csc == "neck_pitch_motor_neuron"),
@@ -611,8 +626,11 @@ def build_pan_connectome(min_synapse_count: int = 2) -> dict:
         cell_groups[f"mn_{leg_tag}_coxa_fwd"] = _idx(lm & ptt.isin(["sternal_anterior_rotator_muscle", "tergopleural_promotor_muscle", "sternal_adductor_muscle"]))
         cell_groups[f"mn_{leg_tag}_coxa_bwd"] = _idx(lm & ptt.isin(["sternal_posterior_rotator_muscle", "pleural_remotor_and_abductor_muscle"]))
         cell_groups[f"mn_{leg_tag}_troch_lift"] = _idx(lm & ptt.isin(["trochanter_flexor_muscle", "accessory_trochanter_flexor_muscle"]))
-        cell_groups[f"mn_{leg_tag}_tibia_flex"] = _idx(lm & ptt.isin(["tibia_flexor_muscle", "accessory_tibia_flexor_muscle", "femur_reductor_muscle"]))
-        cell_groups[f"mn_{leg_tag}_tibia_ext"] = _idx(lm & ptt.isin(["tibia_extensor_muscle", "trochanter_extensor_muscle", "sternotrochanter_extensor_muscle"]))
+        cell_groups[f"mn_{leg_tag}_troch_ext"] = _idx(lm & ptt.isin(["trochanter_extensor_muscle", "sternotrochanter_extensor_muscle", "tergotrochanter_extensor_muscle"]))
+        cell_groups[f"mn_{leg_tag}_femur_roll"] = _idx(lm & (ptt == "femur_reductor_muscle"))
+        cell_groups[f"mn_{leg_tag}_tibia_flex"] = _idx(lm & ptt.isin(["tibia_flexor_muscle", "accessory_tibia_flexor_muscle"]))
+        cell_groups[f"mn_{leg_tag}_tibia_ext"] = _idx(lm & (ptt == "tibia_extensor_muscle"))
+        cell_groups[f"mn_{leg_tag}_tarsus_lev"] = _idx(lm & (ptt == "tarsus_levator_muscle"))
         cell_groups[f"mn_{leg_tag}_tarsus_grip"] = _idx(lm & ptt.isin(["long_tendon_muscle", "tarsus_depressor_muscle"]))
 
     orn_types = sorted(b_meta.loc[cc == "olfactory_receptor_neuron", "cell_type"].dropna().unique())

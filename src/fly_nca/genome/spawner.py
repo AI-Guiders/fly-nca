@@ -33,6 +33,7 @@ SocialBehaviorLabel = Literal[
     "FORAGING_ROVER",
     "FORAGING_SITTER",
     "FEEDING_PER",
+    "GROOMING_FRONT_LEGS",
     "MALE_COURTSHIP_SONG",
     "FEMALE_FRUM_COURTSHIP_SONG",
     "MALE_BOXING_ESCALATION",
@@ -100,10 +101,17 @@ class SpawnedFly:
     composition: FlyNCAComposition
     arena: FastTensorArena3D
     life_stage: LifeStage = "adult"
-    stage_progress: float = 1.0           # [0..1] progress through current developmental stage
-    larval_mass_mg: float = 1.20          # Critical weight ~1.0 mg triggers 20E ecdysone pupariation pulse!
-    pupal_hapf: float = 48.0              # Hours after puparium formation (0 -> 6 -> 24 -> 36 -> 48 h.a.p.f.)
+    stage_progress: float = 1.0           # [0..1] progress computed directly from the living genomic/morphogenetic NCA!
+    larval_mass_mg: float = 1.20          # Critical weight ~1.05 mg triggers neuroendocrine 20E pupariation pulse!
+    pupal_hapf: float = 48.0              # Morphogenetic Wave 2 + CAM tract assembly progress (6 -> 48 h.a.p.f.)
     ecdysone_20e_titer: float = 0.0       # Steroid hormone 20-hydroxyecdysone titer [0..1]
+    embryo_bcd: torch.Tensor | None = None
+    embryo_nos: torch.Tensor | None = None
+    embryo_hb: torch.Tensor | None = None
+    embryo_kr: torch.Tensor | None = None
+    embryo_kni: torch.Tensor | None = None
+    embryo_steps: int = 0
+    pupa_tract_w: torch.Tensor | None = None
     is_mated: bool = False
     mate_genome: IndividualFlyGenome | None = None
     eggs_laid: int = 0
@@ -398,13 +406,87 @@ class MultiFlySocialArena3D:
                 dist_to_cup = math.hypot(xi, yi)
                 on_yeast_cup = dist_to_cup < self.food_yeast_radius_m
 
-                # --- Ontogenetic Stages L0-L1: EGG -> LARVA (Wave 1, 3,961 primary BANC cells) -> PUPA (20E Wave 2) -> ADULT ---
+                # --- Ontogenetic Stages driven purely by the Genomic & Morphogenetic Cellular Automaton ---
                 if f_i.life_stage == "egg":
-                    f_i.stage_progress = min(1.0, f_i.stage_progress + 0.50)
+                    # Step the Syncytial Blastoderm -> Gap/Pair-Rule/Hox Genomic Automaton directly inside the egg!
+                    n_pos = 64
+                    if f_i.embryo_bcd is None or f_i.embryo_nos is None or f_i.embryo_hb is None or f_i.embryo_kr is None or f_i.embryo_kni is None:
+                        f_i.embryo_bcd = torch.zeros(n_pos, dtype=torch.float32)
+                        f_i.embryo_nos = torch.zeros(n_pos, dtype=torch.float32)
+                        f_i.embryo_hb = torch.full((n_pos,), 0.5, dtype=torch.float32)
+                        f_i.embryo_kr = torch.zeros(n_pos, dtype=torch.float32)
+                        f_i.embryo_kni = torch.zeros(n_pos, dtype=torch.float32)
+                        f_i.embryo_steps = 0
+
+                    bcd = f_i.embryo_bcd
+                    nos = f_i.embryo_nos
+                    hb = f_i.embryo_hb
+                    kr = f_i.embryo_kr
+                    kni = f_i.embryo_kni
+                    decay = 0.00045
+                    # Local syncytial neighbor diffusion steps (`roll(±1)`) per tick
+                    for _ in range(400):
+                        bcd[0] = 1.0
+                        nos[-1] = 1.0
+                        bcd_l = torch.cat([bcd[:1], bcd[:-1]])
+                        bcd_r = torch.cat([bcd[1:], bcd[-1:]])
+                        nos_l = torch.cat([nos[:1], nos[:-1]])
+                        nos_r = torch.cat([nos[1:], nos[-1:]])
+                        bcd = (1.0 - decay) * (0.50 * bcd + 0.25 * (bcd_l + bcd_r))
+                        nos = (1.0 - decay) * (0.50 * nos + 0.25 * (nos_l + nos_r))
+                    bcd[0] = 1.0
+                    nos[-1] = 1.0
+                    cad = (0.5 * (2.0 / (1.0 + 4.5 * bcd))).clamp(0.0, 1.0)
+                    if f_i.embryo_steps == 0:
+                        hb = (0.5 * (2.0 / (1.0 + 6.5 * nos))).clamp(0.0, 1.0)
+                    tll = torch.zeros(n_pos, dtype=torch.float32)
+                    tll[-4:] = 1.0
+                    tll[:2] = 0.7
+                    for _ in range(15):
+                        hb_drive = torch.sigmoid(4.5 * (0.85 * bcd + 0.45 * hb - 0.35 - 0.50 * kr - 0.85 * nos))
+                        kr_drive = torch.relu(1.0 - 2.2 * (hb - 0.48).abs()) * torch.sigmoid(5.0 * (0.55 - kni - tll))
+                        kni_drive = torch.sigmoid(7.0 * (cad - 1.25 * hb - 0.75 * kr - 1.2 * tll - 0.12))
+                        hb = (0.70 * hb + 0.30 * hb_drive).clamp(0.0, 1.0)
+                        kr = (0.70 * kr + 0.30 * kr_drive).clamp(0.0, 1.0)
+                        kni = (0.70 * kni + 0.30 * kni_drive).clamp(0.0, 1.0)
+
+                    f_i.embryo_bcd, f_i.embryo_nos, f_i.embryo_hb, f_i.embryo_kr, f_i.embryo_kni = bcd, nos, hb, kr, kni
+                    f_i.embryo_steps += 1
+
+                    # Evaluate Hox neuromere commitment (0..7) directly from the genomic automaton state!
+                    committed_segs: set[int] = set()
+                    for idx_n in range(n_pos):
+                        b_v, c_v, h_v, k_v, kn_v, tl_v = (
+                            float(bcd[idx_n]),
+                            float(cad[idx_n]),
+                            float(hb[idx_n]),
+                            float(kr[idx_n]),
+                            float(kni[idx_n]),
+                            float(tll[idx_n]),
+                        )
+                        if b_v > 0.78 and h_v > 0.80:
+                            committed_segs.add(0)
+                        elif b_v > 0.62 and h_v > 0.72:
+                            committed_segs.add(1)
+                        elif b_v > 0.48 and h_v > 0.60:
+                            committed_segs.add(2)
+                        elif k_v >= 0.35 and b_v >= 0.34:
+                            committed_segs.add(3)
+                        elif k_v >= 0.20 and b_v >= 0.22:
+                            committed_segs.add(4)
+                        elif kn_v >= 0.35 and c_v < 0.78:
+                            committed_segs.add(5)
+                        elif kn_v >= 0.25 and tl_v < 0.50:
+                            committed_segs.add(6)
+                        else:
+                            committed_segs.add(7)
+
+                    # Egg hatches when all 8 Hox neuromeres (0..7) have self-organized and Wave 1 neurogenesis completes!
+                    f_i.stage_progress = min(1.0, (len(committed_segs) / 8.0) * min(1.0, f_i.embryo_steps / 2.0))
                     f_i.full_connectome.set_ontogeny_stage("egg", f_i.stage_progress)
                     f_i.current_behavior = "EGG_SYNCYTIUM_BLASTODERM"
                     n_egg_cells = int(f_i.full_connectome.sex_cell_mask.sum().item())
-                    if f_i.stage_progress >= 1.0:
+                    if len(committed_segs) == 8 and f_i.embryo_steps >= 2:
                         _ = f_i.composition.genome.run_syncytial_embryogenesis_nca(n_positions=64)
                         f_i.life_stage = "larva"
                         f_i.stage_progress = 0.0
@@ -418,7 +500,8 @@ class MultiFlySocialArena3D:
                     continue
 
                 if f_i.life_stage == "larva":
-                    # Crawling Wave 1 larva running on its 3,961 empirical BANC primary cells (`wave1_primary`):
+                    # Crawling Wave 1 larva running purely on its 3,961 empirical BANC primary cells (`wave1_primary`):
+                    # Zero scripted `dx, dy = -xi, -yi` attraction! Movement & pharyngeal ingestion come strictly from the Wave 1 connectome!
                     f_i.full_connectome.set_ontogeny_stage("larva", f_i.stage_progress)
                     sensor_l = f_i.arena.step_physics(MotorOut.zeros(device=f_i.arena.pos_xyz.device), dt_ms=0.0)
                     conn_l = f_i.full_connectome.step_full_connectome(
@@ -427,13 +510,14 @@ class MultiFlySocialArena3D:
                         hunger_level=0.8,
                         n_synaptic_hops=4,
                     )
-                    dx, dy = -xi, -yi
-                    d_norm = math.hypot(dx, dy) + 1e-6
-                    step_m = 0.0004 * f_i.genome.foraging_locomotion_gain
-                    if d_norm > 0.002:
-                        f_i.arena.pos_xyz[0] += step_m * (dx / d_norm)
-                        f_i.arena.pos_xyz[1] += step_m * (dy / d_norm)
-                    feed_gain = 0.30 if dist_to_cup < 0.010 else 0.15
+                    larva_motor = f_i.full_connectome.decode_motor_effectors()
+                    larva_motor.leg_joint_drive *= 0.15  # Larval peristaltic crawling speed (~1.5 mm/s)
+                    larva_motor.wing_drive_lr.zero_()
+                    larva_motor.jump_ttmn_burst = 0.0
+                    _ = f_i.arena.step_physics(larva_motor, dt_ms=4.038)
+                    # Metabolic assimilation driven by the larva's own pharyngeal/proboscis motor neurons & IPC neurosecretory cells!
+                    ipc_rate = f_i.full_connectome.group_mean_rate("eff_endocrine_ipc_akh")
+                    feed_gain = (0.30 if dist_to_cup < 0.010 else 0.15) * max(0.25, float(larva_motor.proboscis_per) + ipc_rate + 0.5)
                     f_i.larval_mass_mg = round(f_i.larval_mass_mg + feed_gain, 4)
                     f_i.stage_progress = min(1.0, f_i.larval_mass_mg / 1.05)
                     f_i.current_behavior = "LARVA_WAVE1_CRAWLING"
@@ -457,15 +541,24 @@ class MultiFlySocialArena3D:
                     continue
 
                 if f_i.life_stage == "pupa":
-                    # Meng et al. (2026) Nature pupal stages: 6 -> 24 -> 36 -> 48 h.a.p.f.
-                    # Wave 1 pruning + Wave 2 (dati+) secondary neurogenesis & CAM (DIP/Dpr + Beat/Side) tract wiring
-                    f_i.pupal_hapf = min(48.0, f_i.pupal_hapf + 21.0)
+                    # Meng et al. (2026) Nature pupal stages: Wave 1 pruning + Wave 2 (dati+) secondary neurogenesis
+                    # & local CAM (DIP/Dpr + Beat/Side) lock-and-key tract assembly (`K_axon @ M_cam @ Q_dend^T`)!
+                    dev = f_i.composition.developed
+                    if f_i.pupa_tract_w is None:
+                        f_i.pupa_tract_w = dev.organ_tract_matrix.clone() * 0.25
+                    cam_eq = torch.relu(dev.k_org_keys @ dev.m_cam_affinity @ dev.q_org_locks.t())
+                    cam_eq = cam_eq / cam_eq.sum(dim=0, keepdim=True).clamp(min=1e-6)
+                    for _ in range(8):
+                        f_i.pupa_tract_w = 0.65 * f_i.pupa_tract_w + 0.35 * cam_eq
+                        f_i.pupa_tract_w = f_i.pupa_tract_w / f_i.pupa_tract_w.sum(dim=0, keepdim=True).clamp(min=1e-6)
+                    tract_err = float((f_i.pupa_tract_w - cam_eq).abs().max().item())
+                    f_i.pupal_hapf = min(48.0, f_i.pupal_hapf + 21.0 * (1.0 - min(0.8, tract_err)))
                     f_i.stage_progress = min(1.0, f_i.pupal_hapf / 48.0)
                     f_i.ecdysone_20e_titer = round(max(0.1, 1.0 - 0.5 * f_i.stage_progress), 3)
                     f_i.full_connectome.set_ontogeny_stage("pupa", f_i.stage_progress)
                     f_i.current_behavior = "PUPA_20E_METAMORPHOSIS"
                     n_pupa_cells = int(f_i.full_connectome.sex_cell_mask.sum().item())
-                    if f_i.pupal_hapf >= 48.0:
+                    if f_i.pupal_hapf >= 48.0 and tract_err < 0.05:
                         f_i.composition.developed = develop_fly_from_genome(
                             f_i.composition.genome,
                             stage="adult",
@@ -523,15 +616,28 @@ class MultiFlySocialArena3D:
                 else:
                     f_i.arena.small_target_pos_xyz = None
 
-                # Step 3D body + 6 NCA organs
-                telem = f_i.composition.step_cognitive_frame(f_i.arena)
+                # Step 6 NCA organs (hemolymph & telemetry without overwriting the 189,766-cell connectome's body adapter)
+                telem = f_i.composition.step_cognitive_frame(f_i.arena, step_body=False)
                 f_i.last_telemetry = telem
 
-                # Construct full SensorIn with conspecific acoustic song vibration for the 189,766-cell connectome
+                # Construct full SensorIn with conspecific acoustic song vibration & tactile contact for the 189,766-cell connectome
                 sensor = f_i.arena.step_physics(MotorOut.zeros(device=f_i.arena.pos_xyz.device), dt_ms=0.0)
                 sensor.sound_vibration = song_heard
                 if nearest_j is not None and nearest_dist < 0.030:
                     sensor.small_target_salience = max(float(sensor.small_target_salience), 0.75)
+                if nearest_j is not None and nearest_dist < 0.0038:
+                    # Physical cuticle-to-cuticle contact (< 3.8 mm) excites front/middle leg tactile bristles!
+                    touch_mag = min(1.0, (0.0038 - nearest_dist) / 0.0018)
+                    dx_j = nearest_j.pos_xyz[0] - xi
+                    dy_j = nearest_j.pos_xyz[1] - yi
+                    yaw_i = float(f_i.arena.thorax_rpy[2].item())
+                    rel_lat = -math.sin(yaw_i) * dx_j + math.cos(yaw_i) * dy_j
+                    if rel_lat >= 0.0:
+                        sensor.bristle_touch[0] = max(float(sensor.bristle_touch[0]), touch_mag)
+                        sensor.bristle_touch[2] = max(float(sensor.bristle_touch[2]), 0.7 * touch_mag)
+                    else:
+                        sensor.bristle_touch[1] = max(float(sensor.bristle_touch[1]), touch_mag)
+                        sensor.bristle_touch[3] = max(float(sensor.bristle_touch[3]), 0.7 * touch_mag)
 
                 hunger = max(0.0, 1.0 - f_i.composition.hemolymph.sugar_level)
                 # Physical sex-peptide molecule on uterus SPSN receptors is present ONLY if physical copulation occurred!
@@ -579,6 +685,8 @@ class MultiFlySocialArena3D:
                     f_i.current_behavior = "FEMALE_OVIPOSITION"
                 elif conn_out.female_pc1_receptivity_rate > 0.15:
                     f_i.current_behavior = "FEMALE_SONG_RECEPTIVITY"
+                elif conn_out.dn_cluster_rates.get("grooming", 0.0) > 0.06:
+                    f_i.current_behavior = "GROOMING_FRONT_LEGS"
                 elif pan_motor.proboscis_per > 0.25 or telem.motor.proboscis_per > 0.5:
                     f_i.current_behavior = "FEEDING_PER"
                 else:

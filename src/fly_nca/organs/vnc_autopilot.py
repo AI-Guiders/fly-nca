@@ -95,13 +95,6 @@ class VNCAutopilotNCA(nn.Module):
         self.params.lambda_adapt[14:38] = leg_in_bio.ie_ratio         # 0.900 from BANC single_leg_neuromere!
 
         self.register_buffer("state", init_cell_state(N_VNC_CELLS, device=self.device, dtype=dtype))
-        # Seed slight initial asymmetry between Tripod A (L1=0, R2=3, L3=4) and Tripod B (R1=1, L2=2, R3=5)
-        for leg_a in (0, 3, 4):
-            self.state[14 + leg_a * 4 + 0, CH_V] = wing_bio.port_dendrite_dendrite
-            self.state[14 + leg_a * 4 + 0, CH_A] = wing_bio.ach_share
-        for leg_b in (1, 2, 5):
-            self.state[14 + leg_b * 4 + 1, CH_V] = wing_bio.port_dendrite_dendrite
-            self.state[14 + leg_b * 4 + 1, CH_A] = wing_bio.ach_share
 
         # Ablation mask [N_VNC_CELLS] (1.0 = intact, 0.0 = genetically silenced e.g. LBL40 in T3)
         self.register_buffer("ablation_mask", torch.ones(N_VNC_CELLS, device=self.device, dtype=dtype))
@@ -258,7 +251,11 @@ class VNCAutopilotNCA(nn.Module):
             # Cross-leg campaniform load shunts neighbor LUL130 swing initiation -> spontaneous Tripod Gait!
             comp_swing_inh = sum(float(presyn_out[14 + nb * 4 + 1].item()) for nb in tripod_competitors[leg])
             exc_b[c_lul130, 0] = w_leg_exc * leg_drive + (w_leg_load + self.leg_in_bio.segregation_index) * float(self.state[c_lbl40, CH_ADAPT].item())
-            shunt_b[c_lul130, 0] = w_leg_shunt * lbl_act + (2.0 * self.leg_in_bio.ie_ratio) * comp_swing_inh
+            shunt_b[c_lul130, 0] = (
+                w_leg_shunt * lbl_act
+                + 2.0 * w_leg_load * load_val
+                + (2.0 * self.leg_in_bio.ie_ratio) * comp_swing_inh
+            )
 
             # Forward Coxa vs Moonwalker (MDN) Backward Coxa gated by Port 2 shunt!
             exc_b[c_fwd, 0] = lbl_act * dn.forward_walk_dnp09 * side_gain

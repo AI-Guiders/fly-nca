@@ -77,13 +77,18 @@ class FlyNCAComposition(nn.Module):
             device=self.device,
         )
 
-        # Instantiate the 6 natural topological NCA organs + Glia + Hemolymph
+        # Instantiate the 6 natural topological NCA organs + Glia + Hemolymph scaled by developed morphogenesis!
+        org_counts = self.developed.organ_cell_counts()
+        wt_mb_ref = 250.0
+        mb_scale = max(0.05, float(org_counts.get("MB", 250)) / wt_mb_ref)
+        n_kc_grown = int(round(4552 * mb_scale))
+
         self.glia = GlialSubstrateNCA(n_compartments=15, device=self.device, dtype=dtype)
         self.hemolymph = HemolymphState()
         self.optic_lobe = OpticLobeNCA(device=self.device, dtype=dtype)
         self.antennal_sez = AntennalSEZNCA(device=self.device, dtype=dtype)
         self.lh_spin = LHSpinGateNCA(device=self.device, dtype=dtype)
-        self.mushroom_body = MushroomBodyNCA(device=self.device, dtype=dtype)
+        self.mushroom_body = MushroomBodyNCA(n_kc=n_kc_grown, device=self.device, dtype=dtype)
         self.central_complex = CentralComplexNCA(device=self.device, dtype=dtype)
         self.vnc_autopilot = VNCAutopilotNCA(frazzled_state=frazzled_state, device=self.device, dtype=dtype)
 
@@ -99,6 +104,8 @@ class FlyNCAComposition(nn.Module):
         visual_darkness: bool = False,
         gtacr1_inhibit_fb_goal: bool = False,
         recorder: ImpulseRecorder | None = None,
+        *,
+        step_body: bool = True,
     ) -> FlyFrameTelemetry:
         """Execute 1 cognitive frame (4.0 ms = 1 wingbeat) composed of 1 CB/OL update + 4 x 1.0 ms VNC ticks."""
         self.frame_tick_id += 1
@@ -202,11 +209,12 @@ class FlyNCAComposition(nn.Module):
                     sensor=sensor,
                     valence_sign=us_sign,
                 )
+            w_mb_to_lh = self.developed.tract_weight("MB", "LH_SPIN") / BANC_ORGAN_INPUT_MATRIX[3][2]
             lh_out = self.lh_spin.step_lh_spin(
                 pn_glomeruli_50=chem.pn_glomeruli_50,
                 sensor=sensor,
                 hemolymph=self.hemolymph,
-                mbon_learned_valence=mb_read.net_learned_valence,
+                mbon_learned_valence=mb_read.net_learned_valence * w_mb_to_lh,
             )
             if lh_out.cltm_gate_open < 0.5:
                 imp.suppress(
@@ -292,7 +300,8 @@ class FlyNCAComposition(nn.Module):
             sub_dt_ms = 0.25 * TAU_FRAME_MS
             for _ in range(4):
                 motor, self.last_an_efference = self.vnc_autopilot.step_autopilot(sensor, dn=dn_cmd, dt_ms=sub_dt_ms)
-                sensor = arena.step_physics(motor, dt_ms=sub_dt_ms)
+                if step_body:
+                    sensor = arena.step_physics(motor, dt_ms=sub_dt_ms)
 
             active_routes: list[str] = []
             route_port = BiologicalPort.PORT1_ACH

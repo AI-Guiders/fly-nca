@@ -148,9 +148,71 @@ class FlyGenome:
     species_id: str = "drosophila.melanogaster.banc-v888"
     cam_dim: int = 16
     gap_dim: int = 8
+    segments: tuple[str, ...] = SEGMENTS_8
+    organs: tuple[str, ...] = ("OL", "AL", "LH_SPIN", "MB", "CX", "AN_DN", "VNC", "SEZ", "GLIA")
+    shtf_names: tuple[str, ...] = SHTF_17_NAMES
     hemilineages: list[HemilineageSpec] = field(default_factory=build_canonical_hemilineage_catalog)
+    organ_input_matrix: tuple[tuple[float, ...], ...] | None = None
+    # Evolutionary heterochrony / Notch Type-II neuroblast & basal radial glia (bRG) amplification per organ
+    notch_type2_amplification: dict[str, float] = field(default_factory=dict)
+    # Homeotic Hox segment remapping (e.g. Ultrabithorax loss-of-function transforming T3 -> T2)
+    hox_segment_overrides: dict[str, str] = field(default_factory=dict)
     # Ectopic transcription factor overrides for in-silico genetics (e.g. Broad shift in 14A, Nature 2026)
     ectopic_tf_overrides: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def urbilateria_worm(cls) -> FlyGenome:
+        """Ancestral Bilaterian / C. elegans-grade genome: Wave 1 primary core only, zero secondary Wave 2 appendage expansion."""
+        worm_lines = [
+            HemilineageSpec(
+                hl.name,
+                hl.segment,
+                hl.notch_on,
+                hl.fast_nt,
+                hl.cotransmitter,
+                hl.organ_target,
+                hl.wave1_count,
+                0,
+                hl.sex_dimorphic_fraction,
+            )
+            for hl in build_canonical_hemilineage_catalog()
+            if hl.wave1_count > 0
+        ]
+        return cls(
+            species_id="urbilateria.primary_worm",
+            hemilineages=worm_lines,
+        )
+
+    @classmethod
+    def drosophila_wt(cls) -> FlyGenome:
+        """Wild-type Drosophila melanogaster genome (Wave 1 larval core + 20E Wave 2 adult expansion)."""
+        return cls(species_id="drosophila.melanogaster.banc-v888")
+
+    @classmethod
+    def ultrabithorax_bithorax_mutant(cls) -> FlyGenome:
+        """Nobel 1995 (Lewis) Ultrabithorax (Ubx^-) homeotic mutant: T3 metathorax derepresses into a second T2 mesothorax."""
+        return cls(
+            species_id="drosophila.melanogaster.ubx_bithorax_4wing",
+            hox_segment_overrides={"T3": "T2"},
+            notch_type2_amplification={"VNC": 1.25},
+        )
+
+    @classmethod
+    def vertebrate_pallium_expansion(
+        cls,
+        *,
+        pallium_notch_gain: float = 4.0,
+        basal_ganglia_gain: float = 2.0,
+    ) -> FlyGenome:
+        """Evo-Devo step: conserve brainstem/spinal (SEZ/VNC) core while amplifying Type-II/bRG Notch proliferation in Pallium (MB) & Basal Ganglia (CX)."""
+        return cls(
+            species_id="chordata.pallium_basal_ganglia_expanded",
+            notch_type2_amplification={
+                "MB": float(pallium_notch_gain),
+                "CX": float(basal_ganglia_gain),
+                "LH_SPIN": 1.5,
+            },
+        )
 
     def run_syncytial_embryogenesis_nca(
         self,

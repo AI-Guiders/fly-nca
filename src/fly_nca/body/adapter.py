@@ -77,5 +77,19 @@ class SensorIn:
 class FlyBodyAdapter(Protocol):
     """Client-agnostic hardware contract between Fly-NCA and any 3D physics engine."""
 
+    pos_xyz: torch.Tensor
+    vel_xyz: torch.Tensor
+    thorax_rpy: torch.Tensor
+    omega_rpy: torch.Tensor
+    neck_rpy: torch.Tensor
+    leg_angles: torch.Tensor
+    leg_load: torch.Tensor
+    bristle_touch: torch.Tensor
+    time_ms: float
+
+    def connect(self, fly: object) -> FlyBodyAdapter:
+        """Bind a living Fly-NCA connectome/organism to this peripheral body adapter."""
+        ...
+
     def step_physics(self, motor: MotorOut, dt_ms: float = 1.0) -> SensorIn:
         ...
