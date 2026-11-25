@@ -9,9 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from fly_nca.app.scenario import SCENARIOS, get_scenario
-from fly_nca.core.cell_state import TAU_FAST_MS, TAU_FRAME_MS
-from fly_nca.genome.banc_biophysics import BANC_EMPIRICAL_BIOPHYSICS
-from fly_nca.instruments.catalog import InstrumentId, REGISTRY
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,6 +33,8 @@ def check_zero_pinv_and_atan2_purity(device: str = "cpu") -> dict[str, Any]:
 
 def check_banc_biophysics_and_time_quanta(device: str = "cpu") -> dict[str, Any]:
     """Verify 21 empirical BANC v888 cell classes and mt-lattice-fluid MODEL §4.8 time quanta."""
+    from fly_nca.core.cell_state import TAU_FAST_MS, TAU_FRAME_MS
+    from fly_nca.genome.banc_biophysics import BANC_EMPIRICAL_BIOPHYSICS
     from fly_nca.genome.morphogenesis import develop_fly_from_genome
 
     f = develop_fly_from_genome(scale=0.05, device=device)
@@ -116,6 +115,7 @@ def check_pmc13031250_dfb_sleep_creb_consolidation(device: str = "cpu") -> dict[
 def check_instrument_panel_completeness(device: str = "cpu") -> dict[str, Any]:
     """Verify that all 34 registered instruments in REGISTRY are sampled by LabSession.panel()."""
     from fly_nca.app.lab import open_lab
+    from fly_nca.instruments.catalog import InstrumentId, REGISTRY
 
     lab = open_lab("pmc9213513_mb_gamma1_shibire", device=device)
     lab.step(2)
@@ -224,6 +224,7 @@ def check_shiu2024_nature_sez_optogenetics_blind_holdout(device: str = "cpu") ->
     import pyarrow.parquet as pq
     import torch
     from fly_nca.connectome import FullConnectomeFlyNCA
+    from fly_nca.genome.banc_biophysics import BANC_EMPIRICAL_BIOPHYSICS
 
     repo_data = Path(__file__).resolve().parents[1] / "data"
     shiu_csv = repo_data / "shiu_et_al_2025_fafb_mapped_opto_and_model_results.csv"
