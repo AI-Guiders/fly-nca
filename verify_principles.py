@@ -19,8 +19,15 @@ _SRC = _REPO / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-import pyarrow.feather  # noqa: F401 - import before torch on Windows
-import torch
+try:
+    import pyarrow.feather  # noqa: F401 - import before torch on Windows when available
+except ImportError:
+    pass
+
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
 
 from fly_nca.app.scenario import SCENARIOS, get_scenario
 from verify_checks.suites import (
@@ -75,8 +82,9 @@ def _print_results(device: str, rows: list[dict], *, by_suite: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    has_cuda = bool(torch is not None and torch.cuda.is_available())
     parser = argparse.ArgumentParser(description="Fly-NCA First-Principles & Wet-Lab Verification")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", default="cuda" if has_cuda else "cpu")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--list", action="store_true", help="List verify suites and wet-lab scenarios.")
     parser.add_argument(
@@ -102,6 +110,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list:
         return cmd_list(args)
+
+    if torch is None:
+        print(
+            "Error: PyTorch (`torch`) is not installed in the active Python environment.\n"
+            "On a fresh clone, create and activate a virtual environment first:\n"
+            "  python3 -m venv .venv\n"
+            "  source .venv/bin/activate   # Windows PowerShell: .\\.venv\\Scripts\\Activate.ps1\n"
+            "  pip install -r requirements.txt",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.device == "cuda" and not torch.cuda.is_available():
         args.device = "cpu"

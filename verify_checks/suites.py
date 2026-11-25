@@ -8,11 +8,9 @@ import inspect
 from pathlib import Path
 from typing import Any
 
-from fly_nca.app.lab import execute_scenario_protocol, open_lab
 from fly_nca.app.scenario import SCENARIOS, get_scenario
 from fly_nca.core.cell_state import TAU_FAST_MS, TAU_FRAME_MS
 from fly_nca.genome.banc_biophysics import BANC_EMPIRICAL_BIOPHYSICS
-from fly_nca.genome.morphogenesis import develop_fly_from_genome
 from fly_nca.instruments.catalog import InstrumentId, REGISTRY
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +36,8 @@ def check_zero_pinv_and_atan2_purity(device: str = "cpu") -> dict[str, Any]:
 
 def check_banc_biophysics_and_time_quanta(device: str = "cpu") -> dict[str, Any]:
     """Verify 21 empirical BANC v888 cell classes and mt-lattice-fluid MODEL §4.8 time quanta."""
+    from fly_nca.genome.morphogenesis import develop_fly_from_genome
+
     f = develop_fly_from_genome(scale=0.05, device=device)
     tau_dan = BANC_EMPIRICAL_BIOPHYSICS["mushroom_body_dopaminergic_neuron"].tau_v_ms
     tau_cx_out = BANC_EMPIRICAL_BIOPHYSICS["central_complex_output_neuron"].tau_v_ms
@@ -61,6 +61,8 @@ def check_banc_biophysics_and_time_quanta(device: str = "cpu") -> dict[str, Any]
 
 
 def _run_wetlab_scenario_check(scenario_id: str, device: str) -> dict[str, Any]:
+    from fly_nca.app.lab import execute_scenario_protocol
+
     res = execute_scenario_protocol(scenario_id, device=device)
     meas = res["protocol_measurements"]
     ok = bool(meas.get("matches_published_paper", False))
@@ -113,6 +115,8 @@ def check_pmc13031250_dfb_sleep_creb_consolidation(device: str = "cpu") -> dict[
 
 def check_instrument_panel_completeness(device: str = "cpu") -> dict[str, Any]:
     """Verify that all 34 registered instruments in REGISTRY are sampled by LabSession.panel()."""
+    from fly_nca.app.lab import open_lab
+
     lab = open_lab("pmc9213513_mb_gamma1_shibire", device=device)
     lab.step(2)
     panel = lab.panel()

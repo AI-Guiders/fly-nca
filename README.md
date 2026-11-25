@@ -23,21 +23,32 @@
 
 ---
 
-## Быстрый запуск лабораторного стенда
+## Установка окружения с чистого клона и быстрый запуск лабораторного стенда
+
+Требуется **Python 3.11+** и **Git LFS** (для подтягивания `data/drosophila_pan_connectome_189766.pt`).
 
 ```bash
-# Список всех сьютов и натурных экспериментальных протоколов
-python verify_principles.py --list
-python -m fly_nca.app list
+# 0. С чистого клона: подтянуть LFS-файлы коннектома, создать виртуальное окружение и поставить зависимости
+git lfs pull
+python3 -m venv .venv
+source .venv/bin/activate          # Linux / macOS
+# .\.venv\Scripts\Activate.ps1     # Windows PowerShell
 
-# Полный прогон всех проверок (чистота модели + 9 натурных протоколов + 36 приборов)
-python verify_principles.py --ship
+pip install --upgrade pip
+pip install -r requirements.txt    # устанавливает torch, numpy, pyarrow, pandas, pytest и пакет fly-nca (-e .)
 
-# Запуск отдельного натурного протокола или снятие панели из 36 приборов
-python -m fly_nca.app run pmc9213513_mb_gamma1_shibire
-python -m fly_nca.app panel pmc13518903_vt062617_wind_tunnel --steps 4
+# 1. Список всех сьютов и натурных экспериментальных протоколов (работает даже без установленного torch/pyarrow)
+python3 verify_principles.py --list
+python3 -m fly_nca.app list
 
-# Полный набор тестов M1–M7
+# 2. Полный прогон всех проверок (чистота модели + 9 натурных протоколов + 36 приборов + слепой холдаут Shiu 2024)
+python3 verify_principles.py --ship
+
+# 3. Запуск отдельного натурного протокола или снятие панели приборов
+python3 -m fly_nca.app run pmc9213513_mb_gamma1_shibire
+python3 -m fly_nca.app panel pmc13518903_vt062617_wind_tunnel --steps 4
+
+# 4. Полный набор тестов M1–M7
 pytest -q
 ```
 

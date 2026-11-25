@@ -5,15 +5,31 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import torch
+import sys
 
-from fly_nca.app.lab import execute_scenario_protocol, open_lab
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore[assignment]
+
 from fly_nca.app.scenario import SCENARIOS
-from fly_nca.genome.spawner import FlySpawner, MultiFlySocialArena3D
 
 
 def _device_default() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    return "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
+
+
+def _require_torch() -> None:
+    if torch is None:
+        print(
+            "Error: PyTorch (`torch`) is not installed in the active Python environment.\n"
+            "On a fresh clone, create and activate a virtual environment first:\n"
+            "  python3 -m venv .venv\n"
+            "  source .venv/bin/activate   # Windows PowerShell: .\\.venv\\Scripts\\Activate.ps1\n"
+            "  pip install -r requirements.txt",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
 
 def cmd_list(_: argparse.Namespace) -> int:
@@ -28,6 +44,9 @@ def cmd_list(_: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    _require_torch()
+    from fly_nca.app.lab import execute_scenario_protocol
+
     if args.device == "cuda" and not torch.cuda.is_available():
         args.device = "cpu"
     payload = execute_scenario_protocol(args.scenario, device=args.device)
@@ -39,6 +58,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_panel(args: argparse.Namespace) -> int:
+    _require_torch()
+    from fly_nca.app.lab import open_lab
+
     if args.device == "cuda" and not torch.cuda.is_available():
         args.device = "cpu"
     lab = open_lab(args.scenario, device=args.device)
@@ -52,6 +74,9 @@ def cmd_panel(args: argparse.Namespace) -> int:
 
 
 def cmd_spawn(args: argparse.Namespace) -> int:
+    _require_torch()
+    from fly_nca.genome.spawner import FlySpawner, MultiFlySocialArena3D
+
     if args.device == "cuda" and not torch.cuda.is_available():
         args.device = "cpu"
     spawner = FlySpawner(seed=args.seed, device=args.device)
