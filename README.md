@@ -23,33 +23,25 @@
 
 ---
 
-## Установка окружения с чистого клона и быстрый запуск лабораторного стенда
+## Быстрый запуск лабораторного стенда (автоподнятие `.venv` с чистого клона)
 
 Требуется **Python 3.11+** и **Git LFS** (для подтягивания `data/drosophila_pan_connectome_189766.pt`).
+Скрипт `verify_principles.py` (и CLI `python3 -m fly_nca.app`) при первом запуске на чистом клоне **сам создаёт `.venv`, ставит зависимости из `requirements.txt` и перезапускается внутри `.venv`** (а если его случайно вызвать через `python`, указывающий на Python 2, автоматически переключается на `python3`).
 
 ```bash
-# 0. С чистого клона: подтянуть LFS-файлы коннектома, создать виртуальное окружение и поставить зависимости
-git lfs pull
-python3 -m venv .venv
-source .venv/bin/activate          # Linux / macOS
-# .\.venv\Scripts\Activate.ps1     # Windows PowerShell
-
-pip install --upgrade pip
-pip install -r requirements.txt    # устанавливает torch, numpy, pyarrow, pandas, pytest и пакет fly-nca (-e .)
-
-# 1. Список всех сьютов и натурных экспериментальных протоколов (работает даже без установленного torch/pyarrow)
+# Список всех сьютов и натурных экспериментальных протоколов (работает мгновенно даже без пакетов)
 python3 verify_principles.py --list
 python3 -m fly_nca.app list
 
-# 2. Полный прогон всех проверок (чистота модели + 9 натурных протоколов + 36 приборов + слепой холдаут Shiu 2024)
+# Полный прогон всех проверок (если .venv ещё нет — скрипт сам создаст .venv и поставит requirements.txt)
 python3 verify_principles.py --ship
 
-# 3. Запуск отдельного натурного протокола или снятие панели приборов
+# Запуск отдельного натурного протокола или снятие панели приборов
 python3 -m fly_nca.app run pmc9213513_mb_gamma1_shibire
 python3 -m fly_nca.app panel pmc13518903_vt062617_wind_tunnel --steps 4
 
-# 4. Полный набор тестов M1–M7
-pytest -q
+# Полный набор тестов M1–M7 (внутри .venv)
+.venv/bin/pytest -q
 ```
 
 ---
